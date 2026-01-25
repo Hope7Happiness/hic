@@ -251,7 +251,7 @@ response = agent.run("Create a test file and find all .txt files")
 
 ## Hierarchical Agents
 
-Create agents with subagents:
+Create agents with subagents for complex task delegation:
 
 ```yaml
 # parent_agent.yaml
@@ -270,6 +270,47 @@ The parent agent can delegate file operations to its subagent:
 agent = Skill.from_yaml("parent_agent.yaml", tools, llm)
 response = agent.run("Calculate 100/5 and save it to result.txt")
 ```
+
+### Example: Zoo Director with Role-Playing Agents
+
+See `examples/zoo_director.py` for a complete example of hierarchical agents with personality:
+
+```python
+from agent import Agent, DeepSeekLLM, Tool, get_deepseek_api_key
+
+# Create specialized sub-agents with unique personalities
+cat_agent = Agent(
+    llm=llm,
+    tools=tools,
+    name="猫猫",
+    system_prompt="You must always start responses with '喵呜！' ..."
+)
+
+dog_agent = Agent(
+    llm=llm,
+    tools=tools,
+    name="狗狗",
+    system_prompt="You must always start responses with '汪汪！' ..."
+)
+
+# Create director agent that delegates to sub-agents
+director = Agent(
+    llm=llm,
+    tools=tools,
+    subagents={"猫猫": cat_agent, "狗狗": dog_agent},
+    name="动物园园长",
+    system_prompt="You must delegate all questions to either 猫猫 or 狗狗..."
+)
+
+# Run with custom colored callback for different agents
+response = director.run("请告诉我关于猫的信息")
+```
+
+This example demonstrates:
+- **Agent Delegation**: Director agent chooses the right sub-agent for each task
+- **Role-Playing**: Each agent has a unique personality and response style
+- **Colored Output**: Different agents display in different colors (purple/yellow/blue)
+- **Nested Execution**: Full visibility into parent and child agent interactions
 
 ## Agent Observability with Callbacks
 

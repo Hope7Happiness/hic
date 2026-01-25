@@ -112,7 +112,11 @@ All examples now support `.env` configuration and verbose mode for detailed logg
 # Simple agent example (best for beginners)
 python examples/simple_agent.py
 
-# Complex integrated test with Chinese output (recommended)
+# 🌟 Zoo Director - Hierarchical agents with colored output (recommended)
+# Shows parent-child agent delegation with role-playing agents
+python examples/zoo_director.py
+
+# Complex integrated test with Chinese output
 # Shows real-world data analysis workflow with detailed logging
 python examples/complex_integrated_test_cn.py
 
@@ -134,12 +138,21 @@ python examples/custom_llm.py
 - ✅ Tool execution results
 - ⏱️ Performance metrics
 
-**Most impressive demo:** `complex_integrated_test_cn.py` - A complete data analysis workflow with:
-- 5 tools (Python execution, file I/O, data queries, calculator)
-- Multi-step reasoning and planning
-- Full Chinese output with detailed step-by-step logging
-- Real business scenario simulation
-- ~90 seconds to complete
+**Featured Demos:**
+
+1. **`zoo_director.py`** 🌟 NEW! - Hierarchical agent system with role-playing:
+   - 🦁 Director agent delegates to specialized sub-agents
+   - 🐱 Cat agent (always starts with "喵呜！")
+   - 🐶 Dog agent (always starts with "汪汪！")
+   - Each agent displayed in different colors (purple/yellow/blue)
+   - Perfect example of agent delegation and personality
+
+2. **`complex_integrated_test_cn.py`** - Complete data analysis workflow:
+   - 5 tools (Python execution, file I/O, data queries, calculator)
+   - Multi-step reasoning and planning
+   - Full Chinese output with detailed step-by-step logging
+   - Real business scenario simulation
+   - ~90 seconds to complete
 
 ## Project Structure
 
@@ -170,11 +183,12 @@ hic/
 │
 ├── examples/                   # Usage examples (all updated with .env + verbose)
 │   ├── simple_agent.py        # Basic agent (best for beginners)
+│   ├── zoo_director.py        # 🌟 Hierarchical agents with role-playing
 │   ├── deepseek_agent.py      # Agent with DeepSeek LLM
 │   ├── custom_llm.py          # Custom LLM implementation
 │   ├── skill_with_deepseek.py # YAML-configured agent
 │   ├── agent_with_callbacks.py           # Callback system demo
-│   └── complex_integrated_test_cn.py     # 🌟 Complex test (Chinese)
+│   └── complex_integrated_test_cn.py     # Complex test (Chinese)
 │
 ├── .env.example               # API key configuration template
 └── pyproject.toml             # Project config
