@@ -329,6 +329,225 @@ class MetricsCallback(AgentCallback):
         print("=" * 80)
 
 
+class ColorfulConsoleCallback(AgentCallback):
+    """
+    Enhanced console callback with color support for hierarchical agents.
+
+    This callback tracks the agent execution stack and displays each agent's
+    output in a different color with proper indentation. Perfect for visualizing
+    hierarchical agent systems where agents delegate tasks to subagents.
+
+    Features:
+    - Color-coded output per agent
+    - Automatic indentation based on agent nesting level
+    - Stack tracking for proper context restoration
+    - Customizable color schemes via color_map parameter
+
+    Args:
+        verbose: If True, logs all events. If False, only logs major events.
+        color_map: Optional dict mapping agent names to ANSI color codes.
+                   If not provided, uses a default color scheme.
+
+    Example:
+        # Use default colors
+        callback = ColorfulConsoleCallback(verbose=True)
+
+        # Or customize colors
+        custom_colors = {
+            "MainAgent": "\\033[35m",  # Purple
+            "Helper": "\\033[33m",     # Yellow
+        }
+        callback = ColorfulConsoleCallback(verbose=True, color_map=custom_colors)
+    """
+
+    # Default ANSI color codes
+    COLORS = {
+        "RESET": "\033[0m",
+        "DEFAULT": "\033[36m",  # Cyan - default for unknown agents
+        "SUCCESS": "\033[32m",  # Green
+        "WARNING": "\033[33m",  # Yellow
+        "ERROR": "\033[31m",  # Red
+    }
+
+    def __init__(
+        self,
+        verbose: bool = True,
+        color_map: Optional[Dict[str, str]] = None,
+    ):
+        self.verbose = verbose
+        self.color_map = color_map or {}
+        self._start_time = None
+        self._current_agent = None
+        self._agent_stack = []  # Track nested agent calls
+
+    def _get_agent_color(self, agent_name: str) -> str:
+        """
+        Get color code for an agent.
+
+        First checks custom color_map, then falls back to default.
+        Supports partial matching (e.g., "园长" matches "动物园园长").
+        """
+        if not agent_name:
+            return self.COLORS["DEFAULT"]
+
+        # Exact match in custom color map
+        if agent_name in self.color_map:
+            return self.color_map[agent_name]
+
+        # Partial match in custom color map
+        for key, color in self.color_map.items():
+            if key in agent_name or agent_name in key:
+                return color
+
+        # Fall back to default
+        return self.COLORS["DEFAULT"]
+
+    def _log(self, message: str, agent_name: Optional[str] = None, level: str = "INFO"):
+        """Print colored log message."""
+        if level in ["SUCCESS", "WARNING", "ERROR"]:
+            color = self.COLORS[level]
+        elif agent_name:
+            color = self._get_agent_color(agent_name)
+        else:
+            color = self.COLORS["DEFAULT"]
+
+        reset = self.COLORS["RESET"]
+        print(f"{color}{message}{reset}")
+
+    def on_agent_start(self, task: str, agent_name: str):
+        self._current_agent = agent_name
+        self._agent_stack.append(agent_name)
+
+        indent = "  " * (len(self._agent_stack) - 1)
+
+        if len(self._agent_stack) == 1:
+            # Main agent starting
+            self._start_time = datetime.now()
+            self._log(f"\n{'=' * 80}", agent_name)
+            self._log(f"🚀 {agent_name} 开始工作", agent_name)
+            self._log(f"{'=' * 80}", agent_name)
+            self._log(f"📋 任务: {task}", agent_name)
+            self._log(
+                f"🕐 开始时间: {self._start_time.strftime('%H:%M:%S')}", agent_name
+            )
+        else:
+            # Subagent starting
+            self._log(f"\n{indent}{'─' * 60}", agent_name)
+            self._log(f"{indent}🤖 子Agent '{agent_name}' 开始处理", agent_name)
+            self._log(f"{indent}{'─' * 60}", agent_name)
+            self._log(
+                f"{indent}📋 任务: {task[:80]}{'...' if len(task) > 80 else ''}",
+                agent_name,
+            )
+
+    def on_iteration_start(self, iteration: int, agent_name: str):
+        if self.verbose:
+            indent = "  " * (len(self._agent_stack) - 1)
+            self._log(f"\n{indent}{'─' * 60}", agent_name)
+            self._log(f"{indent}🔄 迭代 {iteration}", agent_name)
+            self._log(f"{indent}{'─' * 60}", agent_name)
+
+    def on_llm_response(self, iteration: int, response: str):
+        if self.verbose:
+            agent_name = self._current_agent
+            indent = "  " * (len(self._agent_stack) - 1)
+            self._log(f"\n{indent}🧠 LLM响应:", agent_name)
+
+            lines = response.split("\n")
+            for line in lines[:15]:  # Show first 15 lines
+                self._log(f"{indent}   {line}", agent_name)
+            if len(lines) > 15:
+                self._log(f"{indent}   ... (还有 {len(lines) - 15} 行)", agent_name)
+
+    def on_parse_success(
+        self, iteration: int, action_type: str, details: Dict[str, Any]
+    ):
+        if self.verbose:
+            agent_name = self._current_agent
+            indent = "  " * (len(self._agent_stack) - 1)
+            self._log(f"{indent}✅ 解析成功: {action_type}", agent_name, "SUCCESS")
+
+    def on_tool_call(self, iteration: int, tool_name: str, arguments: Dict[str, Any]):
+        agent_name = self._current_agent
+        indent = "  " * (len(self._agent_stack) - 1)
+        self._log(f"\n{indent}🔧 调用工具: {tool_name}", agent_name)
+        if self.verbose:
+            args_str = json.dumps(arguments, indent=2, ensure_ascii=False)
+            for line in args_str.split("\n"):
+                self._log(f"{indent}   {line}", agent_name)
+
+    def on_tool_result(
+        self, iteration: int, tool_name: str, result: str, success: bool
+    ):
+        agent_name = self._current_agent
+        indent = "  " * (len(self._agent_stack) - 1)
+        result_preview = result[:100] + "..." if len(result) > 100 else result
+        if success:
+            self._log(f"{indent}✅ 工具结果: {result_preview}", agent_name, "SUCCESS")
+        else:
+            self._log(f"{indent}❌ 工具失败: {result_preview}", agent_name, "ERROR")
+
+    def on_subagent_call(self, iteration: int, agent_name: str, task: str):
+        current_agent = self._current_agent
+        indent = "  " * (len(self._agent_stack) - 1)
+        self._log(f"\n{indent}{'═' * 60}", current_agent)
+        self._log(f"{indent}👉 委派任务给: {agent_name}", current_agent)
+        self._log(f"{indent}{'═' * 60}", current_agent)
+        self._log(
+            f"{indent}📝 任务内容: {task[:80]}{'...' if len(task) > 80 else ''}",
+            current_agent,
+        )
+
+    def on_subagent_result(self, iteration: int, agent_name: str, result: str):
+        current_agent = self._current_agent
+        indent = "  " * (len(self._agent_stack) - 1)
+        result_preview = result[:150] + "..." if len(result) > 150 else result
+        self._log(f"\n{indent}{'═' * 60}", current_agent)
+        self._log(f"{indent}✅ {agent_name} 完成任务", agent_name, "SUCCESS")
+        self._log(f"{indent}{'═' * 60}", current_agent)
+        self._log(f"{indent}📄 返回结果: {result_preview}", agent_name)
+
+    def on_agent_finish(self, success: bool, iterations: int, content: str):
+        agent_name = (
+            self._agent_stack.pop() if self._agent_stack else self._current_agent
+        )
+        indent = "  " * len(self._agent_stack)
+
+        if len(self._agent_stack) == 0:
+            # Main agent finished
+            elapsed = (
+                (datetime.now() - self._start_time).total_seconds()
+                if self._start_time
+                else 0
+            )
+
+            self._log(f"\n{'=' * 80}", agent_name)
+            self._log(
+                f"🏁 {agent_name} 工作完成",
+                agent_name,
+                "SUCCESS" if success else "ERROR",
+            )
+            self._log(f"{'=' * 80}", agent_name)
+            self._log(
+                f"✅ 成功: {success}", agent_name, "SUCCESS" if success else "ERROR"
+            )
+            self._log(f"🔄 迭代次数: {iterations}", agent_name)
+            self._log(f"⏱️  总耗时: {elapsed:.2f}秒", agent_name)
+            self._log(f"\n📝 最终结果:", agent_name)
+            self._log(f"{'─' * 80}", agent_name)
+            for line in content.split("\n"):
+                self._log(f"   {line}", agent_name)
+            self._log(f"{'─' * 80}", agent_name)
+        else:
+            # Subagent finished
+            self._log(f"\n{indent}{'─' * 60}", agent_name)
+            self._log(f"{indent}✅ {agent_name} 完成", agent_name, "SUCCESS")
+            self._log(f"{indent}{'─' * 60}", agent_name)
+
+        # Restore current agent context
+        self._current_agent = self._agent_stack[-1] if self._agent_stack else None
+
+
 class FileLoggerCallback(AgentCallback):
     """
     Built-in callback that logs agent execution to a file.

@@ -16,11 +16,11 @@ def calculator(expr: str) -> float:
 # Get API key from .env file
 api_key = get_deepseek_api_key()
 
-# Create agent with verbose mode for detailed logging
+# Create agent with verbose mode for detailed color-coded logging
 llm = DeepSeekLLM(api_key=api_key, model="deepseek-chat")
 agent = Agent(llm=llm, tools=[Tool(calculator)])
 
-# Run with verbose=True to see detailed execution steps
+# Run with verbose=True to see detailed execution steps with colors
 response = agent.run("What is 25 * 4?", verbose=True)
 ```
 
@@ -130,13 +130,18 @@ python examples/deepseek_agent.py
 python examples/custom_llm.py
 ```
 
-**Verbose Mode:** All examples now use `agent.run(task, verbose=True)` which shows:
+**Verbose Mode:** All examples now use `agent.run(task, verbose=True)` which provides **color-coded hierarchical output**:
 - 🚀 Agent start/finish with timestamps
+- 🎨 **Different colors for each agent** (automatic for hierarchical systems)
+- 📊 **Automatic indentation** based on agent nesting level
 - 🔄 Each iteration's progress
 - 💭 LLM's thought process
 - 🔧 Tool calls with arguments
 - ✅ Tool execution results
+- 🤖 Subagent delegation tracking
 - ⏱️ Performance metrics
+
+The verbose mode uses `ColorfulConsoleCallback` by default, which makes it easy to follow complex multi-agent workflows visually.
 
 **Featured Demos:**
 

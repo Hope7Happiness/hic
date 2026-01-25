@@ -89,22 +89,21 @@ class Agent:
 
         Args:
             task: The task description from the user
-            verbose: If True, automatically adds a ConsoleCallback for detailed logging
+            verbose: If True, automatically adds a ColorfulConsoleCallback for detailed logging
+                    with color-coded hierarchical output
 
         Returns:
             AgentResponse with the final output
         """
         # Add verbose callback if requested
-        from agent.callbacks import ConsoleCallback
+        from agent.callbacks import ColorfulConsoleCallback
 
         original_callbacks = self.callbacks
         if verbose and not any(
-            isinstance(cb, ConsoleCallback) for cb in self.callbacks
+            isinstance(cb, ColorfulConsoleCallback) for cb in self.callbacks
         ):
-            # Add a verbose console callback
-            verbose_callback = ConsoleCallback(
-                verbose=True, show_prompts=False, show_responses=True, color=True
-            )
+            # Add a colorful verbose console callback
+            verbose_callback = ColorfulConsoleCallback(verbose=True)
             self.callbacks = self.callbacks + [verbose_callback]
 
         try:

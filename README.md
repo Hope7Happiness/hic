@@ -327,17 +327,34 @@ from agent import Agent, DeepSeekLLM, get_deepseek_api_key
 llm = DeepSeekLLM(api_key=get_deepseek_api_key(), model="deepseek-chat")
 agent = Agent(llm=llm, tools=tools)
 
-# Run with verbose mode - automatically shows detailed logs
+# Run with verbose mode - automatically shows detailed logs with colors
 response = agent.run("Your task here", verbose=True)
 ```
 
-This automatically adds a `ConsoleCallback` that shows:
+This automatically adds a `ColorfulConsoleCallback` that provides:
+- **Color-coded output** for different agents (perfect for hierarchical agent systems)
+- **Automatic indentation** based on agent nesting level
 - Agent start/finish events with timestamps
 - Each iteration's thought process
-- Tool calls with arguments
-- Tool execution results
-- LLM responses
+- Tool calls with arguments and results
+- Subagent delegation tracking
 - Performance metrics
+
+**For hierarchical agents**, each agent in the execution stack gets its own color, making it easy to follow which agent is doing what. You can customize colors:
+
+```python
+from agent import ColorfulConsoleCallback
+
+# Custom color mapping for your agents
+color_map = {
+    "MainAgent": "\033[35m",    # Purple
+    "Helper": "\033[33m",       # Yellow
+    "Analyzer": "\033[34m",     # Blue
+}
+
+callback = ColorfulConsoleCallback(verbose=True, color_map=color_map)
+agent = Agent(llm=llm, tools=tools, callbacks=[callback])
+```
 
 ### Built-in Callbacks
 

@@ -19,6 +19,7 @@ from agent.schemas import AgentResponse, Action
 from agent.callbacks import (
     AgentCallback,
     ConsoleCallback,
+    ColorfulConsoleCallback,
     MetricsCallback,
     FileLoggerCallback,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "Action",
     "AgentCallback",
     "ConsoleCallback",
+    "ColorfulConsoleCallback",
     "MetricsCallback",
     "FileLoggerCallback",
     "load_env",

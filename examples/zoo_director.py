@@ -16,195 +16,14 @@ import os
 # 添加父目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent import DeepSeekLLM, Agent, Tool, get_deepseek_api_key, AgentCallback
-from typing import Dict, Any, Optional
-from datetime import datetime
-import json
-
-
-# ===========================
-# 彩色Console Callback（支持子Agent颜色）
-# ===========================
-
-
-class ColorfulConsoleCallback(AgentCallback):
-    """
-    增强版Console Callback，为不同的子Agent使用不同的颜色。
-
-    颜色方案：
-    - 园长Agent: 紫色
-    - 猫猫Agent: 黄色
-    - 狗狗Agent: 蓝色
-    - 默认: 青色
-    """
-
-    # ANSI颜色代码
-    COLORS = {
-        "RESET": "\033[0m",
-        "DIRECTOR": "\033[35m",  # 紫色 - 园长
-        "CAT": "\033[33m",  # 黄色 - 猫猫
-        "DOG": "\033[34m",  # 蓝色 - 狗狗
-        "DEFAULT": "\033[36m",  # 青色 - 默认
-        "SUCCESS": "\033[32m",  # 绿色 - 成功
-        "WARNING": "\033[33m",  # 黄色 - 警告
-        "ERROR": "\033[31m",  # 红色 - 错误
-    }
-
-    def __init__(self, verbose: bool = True):
-        self.verbose = verbose
-        self._start_time = None
-        self._current_agent = None
-        self._agent_stack = []  # 跟踪Agent调用栈
-
-    def _get_agent_color(self, agent_name: str) -> str:
-        """根据agent名称返回颜色代码"""
-        if "园长" in agent_name or "Director" in agent_name:
-            return self.COLORS["DIRECTOR"]
-        elif "猫猫" in agent_name or "Cat" in agent_name:
-            return self.COLORS["CAT"]
-        elif "狗狗" in agent_name or "Dog" in agent_name:
-            return self.COLORS["DOG"]
-        else:
-            return self.COLORS["DEFAULT"]
-
-    def _log(self, message: str, agent_name: str = None, level: str = "INFO"):
-        """打印带颜色的日志"""
-        if level in ["SUCCESS", "WARNING", "ERROR"]:
-            color = self.COLORS[level]
-        elif agent_name:
-            color = self._get_agent_color(agent_name)
-        else:
-            color = self.COLORS["DEFAULT"]
-
-        reset = self.COLORS["RESET"]
-        print(f"{color}{message}{reset}")
-
-    def on_agent_start(self, task: str, agent_name: str):
-        self._current_agent = agent_name
-        self._agent_stack.append(agent_name)
-
-        indent = "  " * (len(self._agent_stack) - 1)
-
-        if len(self._agent_stack) == 1:
-            # 主Agent开始
-            self._start_time = datetime.now()
-            self._log(f"\n{'=' * 80}", agent_name)
-            self._log(f"🚀 {agent_name} 开始工作", agent_name)
-            self._log(f"{'=' * 80}", agent_name)
-            self._log(f"📋 任务: {task}", agent_name)
-            self._log(
-                f"🕐 开始时间: {self._start_time.strftime('%H:%M:%S')}", agent_name
-            )
-        else:
-            # 子Agent开始
-            self._log(f"\n{indent}{'─' * 60}", agent_name)
-            self._log(f"{indent}🤖 子Agent '{agent_name}' 开始处理", agent_name)
-            self._log(f"{indent}{'─' * 60}", agent_name)
-            self._log(f"{indent}📋 任务: {task[:80]}...", agent_name)
-
-    def on_iteration_start(self, iteration: int, agent_name: str):
-        if self.verbose:
-            indent = "  " * (len(self._agent_stack) - 1)
-            self._log(f"\n{indent}{'─' * 60}", agent_name)
-            self._log(f"{indent}🔄 迭代 {iteration}", agent_name)
-            self._log(f"{indent}{'─' * 60}", agent_name)
-
-    def on_llm_response(self, iteration: int, response: str):
-        if self.verbose:
-            agent_name = self._current_agent
-            indent = "  " * (len(self._agent_stack) - 1)
-            self._log(f"\n{indent}🧠 LLM响应:", agent_name)
-
-            lines = response.split("\n")
-            for line in lines[:15]:  # 显示前15行
-                self._log(f"{indent}   {line}", agent_name)
-            if len(lines) > 15:
-                self._log(f"{indent}   ... (还有 {len(lines) - 15} 行)", agent_name)
-
-    def on_parse_success(
-        self, iteration: int, action_type: str, details: Dict[str, Any]
-    ):
-        if self.verbose:
-            agent_name = self._current_agent
-            indent = "  " * (len(self._agent_stack) - 1)
-            self._log(f"{indent}✅ 解析成功: {action_type}", agent_name, "SUCCESS")
-
-    def on_tool_call(self, iteration: int, tool_name: str, arguments: Dict[str, Any]):
-        agent_name = self._current_agent
-        indent = "  " * (len(self._agent_stack) - 1)
-        self._log(f"\n{indent}🔧 调用工具: {tool_name}", agent_name)
-        if self.verbose:
-            args_str = json.dumps(arguments, indent=2, ensure_ascii=False)
-            for line in args_str.split("\n"):
-                self._log(f"{indent}   {line}", agent_name)
-
-    def on_tool_result(
-        self, iteration: int, tool_name: str, result: str, success: bool
-    ):
-        agent_name = self._current_agent
-        indent = "  " * (len(self._agent_stack) - 1)
-        result_preview = result[:100] + "..." if len(result) > 100 else result
-        if success:
-            self._log(f"{indent}✅ 工具结果: {result_preview}", agent_name, "SUCCESS")
-        else:
-            self._log(f"{indent}❌ 工具失败: {result_preview}", agent_name, "ERROR")
-
-    def on_subagent_call(self, iteration: int, agent_name: str, task: str):
-        current_agent = self._current_agent
-        indent = "  " * (len(self._agent_stack) - 1)
-        self._log(f"\n{indent}{'═' * 60}", current_agent)
-        self._log(f"{indent}👉 园长委派任务给: {agent_name}", current_agent)
-        self._log(f"{indent}{'═' * 60}", current_agent)
-        self._log(f"{indent}📝 任务内容: {task[:80]}...", current_agent)
-
-    def on_subagent_result(self, iteration: int, agent_name: str, result: str):
-        current_agent = self._current_agent
-        indent = "  " * (len(self._agent_stack) - 1)
-        result_preview = result[:150] + "..." if len(result) > 150 else result
-        self._log(f"\n{indent}{'═' * 60}", current_agent)
-        self._log(f"{indent}✅ {agent_name} 完成任务", agent_name, "SUCCESS")
-        self._log(f"{indent}{'═' * 60}", current_agent)
-        self._log(f"{indent}📄 返回结果: {result_preview}", agent_name)
-
-    def on_agent_finish(self, success: bool, iterations: int, content: str):
-        agent_name = (
-            self._agent_stack.pop() if self._agent_stack else self._current_agent
-        )
-        indent = "  " * len(self._agent_stack)
-
-        if len(self._agent_stack) == 0:
-            # 主Agent完成
-            elapsed = (
-                (datetime.now() - self._start_time).total_seconds()
-                if self._start_time
-                else 0
-            )
-
-            self._log(f"\n{'=' * 80}", agent_name)
-            self._log(
-                f"🏁 {agent_name} 工作完成",
-                agent_name,
-                "SUCCESS" if success else "ERROR",
-            )
-            self._log(f"{'=' * 80}", agent_name)
-            self._log(
-                f"✅ 成功: {success}", agent_name, "SUCCESS" if success else "ERROR"
-            )
-            self._log(f"🔄 迭代次数: {iterations}", agent_name)
-            self._log(f"⏱️  总耗时: {elapsed:.2f}秒", agent_name)
-            self._log(f"\n📝 最终结果:", agent_name)
-            self._log(f"{'─' * 80}", agent_name)
-            for line in content.split("\n"):
-                self._log(f"   {line}", agent_name)
-            self._log(f"{'─' * 80}", agent_name)
-        else:
-            # 子Agent完成
-            self._log(f"\n{indent}{'─' * 60}", agent_name)
-            self._log(f"{indent}✅ {agent_name} 完成", agent_name, "SUCCESS")
-            self._log(f"{indent}{'─' * 60}", agent_name)
-
-        # 恢复当前agent
-        self._current_agent = self._agent_stack[-1] if self._agent_stack else None
+from agent import (
+    DeepSeekLLM,
+    Agent,
+    Tool,
+    get_deepseek_api_key,
+    ColorfulConsoleCallback,
+)
+from typing import Dict
 
 
 # ===========================
@@ -387,8 +206,14 @@ def main():
     # 创建Agent系统
     print("🔧 正在初始化动物园Agent系统...")
 
-    # 创建彩色callback
-    callback = ColorfulConsoleCallback(verbose=True)
+    # 创建彩色callback，使用自定义颜色映射
+    color_map = {
+        "动物园园长": "\033[35m",  # 紫色 - 园长
+        "园长": "\033[35m",  # 紫色 - 园长
+        "猫猫": "\033[33m",  # 黄色 - 猫猫
+        "狗狗": "\033[34m",  # 蓝色 - 狗狗
+    }
+    callback = ColorfulConsoleCallback(verbose=True, color_map=color_map)
 
     # 创建Agent系统（传入callback）
     director = create_zoo_agents(api_key, callback)
