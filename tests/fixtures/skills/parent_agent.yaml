@@ -1,0 +1,8 @@
+name: "parent_agent"
+description: "Parent agent with subagents"
+tools:
+  - python_exec
+subagents:
+  file_helper: "subagent.yaml"
+max_iterations: 15
+system_prompt: "You can execute Python and delegate file operations to your subagent."

@@ -1,0 +1,7 @@
+name: "file_skill"
+description: "A skill that works with files"
+tools:
+  - file_write
+  - file_search
+max_iterations: 10
+system_prompt: "You can write and search for files."

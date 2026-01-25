@@ -1,0 +1,6 @@
+name: "simple_skill"
+description: "A simple skill for testing"
+tools:
+  - python_exec
+max_iterations: 5
+system_prompt: "You are a helpful assistant that executes Python code."

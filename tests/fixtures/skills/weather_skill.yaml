@@ -1,0 +1,7 @@
+name: "weather_assistant"
+description: "A skill that provides weather information for cities"
+tools:
+  - get_weather
+  - get_temperature
+max_iterations: 8
+system_prompt: "You are a weather assistant. You can check weather conditions and temperatures for cities. Use get_weather for full weather info and get_temperature for just temperature."
