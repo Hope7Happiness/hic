@@ -215,6 +215,20 @@ pytest tests/test_realtime_reporting.py -k copilot -v
 - Independent LLM instances per agent (prevents history contamination)
 - Strict log validation
 
+### Peer-to-Peer Communication Test (NEW)
+
+`tests/test_communicate.py` ensures sibling agents can exchange data directly via `send_message`/`wait`, even when one agent is still running. AgentA knows the哈希前半部分, AgentB知道后半部分——他们必须互相同步、确认双方都掌握完整哈希码后再 finish。
+
+```bash
+# 默认使用真实 DeepSeek LLM（需要 DEEPSEEK_API_KEY）
+pytest tests/test_communicate.py -s -k deepseek -v
+
+# 如需离线/无 API 模式，使用脚本化 LLM
+USE_SCRIPTED_LLM=1 pytest tests/test_communicate.py -s -k deepseek -v
+```
+
+日志会出现 `[AgentA -> AgentB]发送信息，对方状态是wait，信息内容：...` 等语句，便于在 `logs/AgentA_*.log`、`logs/AgentB_*.log`、`logs/ParentAgent_*.log` 中追踪整个通信过程。
+
 ## Key Features Explained
 
 ### 1. Async Parallel Execution

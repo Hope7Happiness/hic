@@ -10,11 +10,14 @@ This module defines all the data models used in the async agent framework:
 - AgentResponse: The final response from an agent
 """
 
-from typing import Optional, Dict, Any, List, Literal
+from typing import Optional, Dict, Any, List, Literal, TYPE_CHECKING
 from pydantic import BaseModel, Field
 from dataclasses import dataclass, field
 from enum import Enum
 import time
+
+if TYPE_CHECKING:
+    from agent.schemas import AgentMessage
 
 
 class AgentStatus(Enum):
@@ -42,24 +45,10 @@ class LaunchedSubagent:
 
 
 @dataclass
-class AgentState:
-    """Complete serializable state of an agent"""
-
-    agent_id: str
-    task: str
-    iteration: int
-    llm_history: List[Dict[str, str]]
-    launched_subagents: List[LaunchedSubagent]  # All launched
-    pending_subagents: Dict[str, LaunchedSubagent]  # Not yet completed
-    completed_results: Dict[str, Any]  # Completed results
-    context: Dict[str, Any]  # Additional context
-
-
-@dataclass
 class AgentMessage:
     """Message between agents"""
 
-    type: str  # "subagent_completed", "subagent_failed"
+    type: str  # "subagent_completed", "subagent_failed", "peer_message"
     from_agent: str
     to_agent: str
     payload: Dict[str, Any]
@@ -71,10 +60,27 @@ class AgentMessage:
         return self.priority > other.priority
 
 
+@dataclass
+class AgentState:
+    """Complete serializable state of an agent"""
+
+    agent_id: str
+    task: str
+    iteration: int
+    llm_history: List[Dict[str, str]]
+    launched_subagents: List[LaunchedSubagent]  # All launched
+    pending_subagents: Dict[str, LaunchedSubagent]  # Not yet completed
+    completed_results: Dict[str, Any]  # Completed results
+    context: Dict[str, Any]  # Additional context
+    peer_messages: List[AgentMessage] = field(
+        default_factory=list
+    )  # Pending peer messages
+
+
 class Action(BaseModel):
     """Represents an action parsed from LLM output."""
 
-    type: Literal["tool", "launch_subagents", "wait_for_subagents", "finish"] = Field(
+    type: Literal["tool", "launch_subagents", "wait", "send_message", "finish"] = Field(
         ..., description="Type of action to take"
     )
 
@@ -87,6 +93,10 @@ class Action(BaseModel):
         None, description="List of agent names to launch"
     )
     tasks: Optional[List[str]] = Field(None, description="List of tasks for each agent")
+
+    # For send_message
+    recipient: Optional[str] = Field(None, description="Recipient agent name")
+    message: Optional[str] = Field(None, description="Message content")
 
     # For finish
     content: Optional[str] = Field(None, description="Final response content")
@@ -108,6 +118,11 @@ class Action(BaseModel):
                 raise ValueError("agents and tasks must have the same length")
             if len(self.agents) == 0:
                 raise ValueError("Cannot launch zero subagents")
+        elif self.type == "send_message":
+            if self.recipient is None:
+                raise ValueError("recipient is required when type='send_message'")
+            if self.message is None:
+                raise ValueError("message is required when type='send_message'")
         elif self.type == "finish":
             if self.content is None:
                 raise ValueError("content is required when type='finish'")

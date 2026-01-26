@@ -793,6 +793,26 @@ pytest tests/test_realtime_reporting.py -k copilot -v
 
 This test ensures the framework provides responsive, real-time feedback to users even when some sub-tasks take much longer than others.
 
+### Peer-to-Peer Communication Test (NEW)
+
+We added `tests/test_communicate.py` to validate sibling agents sending direct messages via the new `send_message` + `wait` flow.
+
+**What it tests:**
+- Parent agent launches AgentA (knows hash prefix) and AgentB (knows suffix)
+- Agents must exchange parts, confirm both possess the full hash, and only then finish
+- Peer messages cover queued delivery, wake-ups, and log formatting like `[AgentA -> AgentB]发送信息...`
+
+**Run the test:**
+```bash
+# Uses real DeepSeek models by default (requires DEEPSEEK_API_KEY)
+pytest tests/test_communicate.py -s -k deepseek -v
+
+# Optional: use deterministic scripted LLMs instead of hitting the API
+USE_SCRIPTED_LLM=1 pytest tests/test_communicate.py -s -k deepseek -v
+```
+
+This test ensures the orchestrator delivers peer messages correctly whether the recipient is waiting or busy, and that both agents report the final hash to the parent.
+
 ## Project Structure
 
 ```

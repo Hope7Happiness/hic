@@ -32,12 +32,12 @@ class Agent:
     The agent runs in a loop:
     1. Send prompt to LLM with available tools/subagents
     2. Parse LLM output into an Action
-    3. Execute the action (tool, launch_subagents, wait_for_subagents, or finish)
+    3. Execute the action (tool, launch_subagents, wait, send_message, or finish)
     4. Add result to history and continue
 
     Key async features:
     - launch_subagents: Instantly launches subagents (non-blocking)
-    - wait_for_subagents: Suspends agent until subagent completion
+    - wait: Suspends agent until receiving messages or subagent completion
     - Subagent completion triggers agent resumption
     """
 
@@ -46,6 +46,7 @@ class Agent:
         llm: LLM,
         tools: Optional[List[Tool]] = None,
         subagents: Optional[Dict[str, "Agent"]] = None,
+        allowed_peers: Optional[List[str]] = None,
         max_iterations: int = 10,
         system_prompt: Optional[str] = None,
         name: Optional[str] = None,
@@ -59,6 +60,7 @@ class Agent:
             llm: LLM instance for chat completion
             tools: List of Tool objects this agent can use
             subagents: Dict mapping subagent names to Agent instances
+            allowed_peers: List of peer agent names this agent can send messages to
             max_iterations: Maximum number of iterations before forcing completion
             system_prompt: Custom system prompt (uses default if None)
             name: Name of this agent (for debugging/logging)
@@ -66,6 +68,9 @@ class Agent:
             working_directory: Working directory for tool execution (defaults to current dir)
         """
         self.llm = llm
+        self.tools = {tool.name: tool for tool in (tools or [])}
+        self.subagents = subagents or {}
+        self.allowed_peers = allowed_peers or []
         self.max_iterations = max_iterations
         self.name = name or "Agent"
         self.callbacks = callbacks or []
@@ -156,6 +161,12 @@ class Agent:
             prompt_parts.append("\n\nAvailable subagents:")
             for agent_name in self.subagents:
                 prompt_parts.append(f"  - {agent_name}")
+
+        # Add available peers (for communication)
+        if self.allowed_peers:
+            prompt_parts.append("\n\nAvailable peers (you can send messages to them):")
+            for peer_name in self.allowed_peers:
+                prompt_parts.append(f"  - {peer_name}")
 
         # Add format instruction
         prompt_parts.append(f"\n\n{OutputParser.get_format_instruction()}")
@@ -354,9 +365,9 @@ class Agent:
                         await logger.agent_action(
                             agent_id, "launch_subagents", f"Agents: {agents_str}"
                         )
-                    elif action.type == "wait_for_subagents":
+                    elif action.type == "wait":
                         await logger.agent_action(
-                            agent_id, "wait_for_subagents", "Waiting for subagents"
+                            agent_id, "wait", "Waiting for messages/subagents"
                         )
                     elif action.type == "finish":
                         preview = (action.content or "")[:50]
@@ -438,8 +449,26 @@ class Agent:
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
 
-            elif action.type == "wait_for_subagents":
-                # Save state and suspend
+            elif action.type == "send_message":
+                # Send a message to a peer agent
+                observation = await self._execute_send_message(action, agent_id)
+
+                # Notify callbacks: LLM request
+                for callback in self.callbacks:
+                    callback.on_llm_request(
+                        iteration, f"Observation: {observation}", None
+                    )
+
+                llm_output = await loop.run_in_executor(
+                    None, self.llm.chat, f"Observation: {observation}"
+                )
+
+                # Notify callbacks: LLM response
+                for callback in self.callbacks:
+                    callback.on_llm_response(iteration, llm_output)
+
+            elif action.type == "wait":
+                # Save state and suspend again
                 state = AgentState(
                     agent_id=agent_id,
                     task=task,
@@ -455,6 +484,7 @@ class Agent:
 
                 orchestrator = AgentOrchestrator()
                 await orchestrator.save_agent_state(agent_id, state)
+                await orchestrator.check_queued_messages(agent_id)
 
                 # Log agent suspended (console only for root agent)
                 try:
@@ -504,11 +534,66 @@ class Agent:
 
         return response
 
+    def _build_resume_prompt(self, state: AgentState, message: AgentMessage) -> str:
+        """
+        Build a prompt to resume the agent after suspension.
+
+        Args:
+            state: Current agent state
+            message: Message that triggered resumption
+
+        Returns:
+            Resume prompt string
+        """
+        # Extract message details
+        agent_name = message.payload.get("agent_name", "")
+
+        if message.type == "subagent_completed":
+            result = message.payload["result"]
+            result_text = f"现在，agent '{agent_name}' 刚完成，结果为：{result}"
+        elif message.type == "subagent_failed":
+            error = message.payload["error"]
+            result_text = f"现在，agent '{agent_name}' 执行失败，错误为：{error}"
+        elif message.type == "peer_message":
+            sender_name = message.payload.get("sender_name", "unknown")
+            peer_message = message.payload.get("message", "")
+            result_text = f"现在，你收到了来自 {sender_name} 的消息：{peer_message}"
+        else:
+            result_text = f"收到来自 agent '{agent_name}' 的消息"
+
+        # Build status summary
+        status_lines = ["\n当前状态："]
+        for subagent in state.launched_subagents:
+            if subagent.status == "completed":
+                status_lines.append(
+                    f"- {subagent.name}: ✅ 已完成，结果：{subagent.result}"
+                )
+            elif subagent.status == "failed":
+                status_lines.append(
+                    f"- {subagent.name}: ❌ 失败，错误：{subagent.error}"
+                )
+            elif subagent.status == "running":
+                status_lines.append(f"- {subagent.name}: 🔄 运行中")
+
+        status_text = "\n".join(status_lines)
+
+        # Build options (include peer message option)
+        options_text = """
+你可以：
+1. 使用已完成的结果调用 Tool
+2. 启动新的子 Agent
+3. 给 peer agent 发送消息（如果有 allowed_peers）
+4. 继续等待其他子 Agent 或消息
+5. 完成任务
+"""
+
+        return result_text + status_text + options_text
+
     async def _internal_resume(
         self, state: AgentState, message: AgentMessage
     ) -> AgentResponse:
         """
-        Resume execution after being suspended.
+        Resume agent execution from saved state.
 
         Args:
             state: Saved agent state
@@ -518,9 +603,8 @@ class Agent:
             AgentResponse with final result
         """
         # Restore state
-        iteration = state.iteration
         agent_id = state.agent_id
-        task = state.task
+        iteration = state.iteration
         launched_subagents = state.launched_subagents
         pending_subagents = state.pending_subagents
         completed_results = state.completed_results
@@ -528,61 +612,31 @@ class Agent:
         # Restore LLM history
         self.llm.set_history(state.llm_history)
 
-        # Log agent resumed (console only for root agent)
+        # Build resume prompt
+        resume_prompt = self._build_resume_prompt(state, message)
+
+        # Log agent resumed
         try:
             from agent.async_logger import get_logger
 
             logger = get_logger()
-            trigger_agent = message.payload.get("agent_name", "unknown")
-            await logger.agent_resumed(agent_id, f"Triggered by: {trigger_agent}")
+            await logger.agent_resumed(agent_id, f"Resumed from {message.type}")
         except Exception:
             pass
-
-        # Build resume prompt
-        resume_prompt = self._build_resume_prompt(state, message)
 
         # Notify callbacks: LLM request
         for callback in self.callbacks:
             callback.on_llm_request(iteration, resume_prompt, None)
 
-        # Send resume prompt (with error handling for rate limits, etc.)
-        try:
-            loop = asyncio.get_event_loop()
-            llm_output = await loop.run_in_executor(None, self.llm.chat, resume_prompt)
-        except Exception as e:
-            # Log the error
-            try:
-                from agent.async_logger import get_logger, LogLevel
-
-                logger = get_logger()
-                await logger.log(
-                    LogLevel.ERROR,
-                    agent_id,
-                    f"❌ LLM call failed during resume: {str(e)[:200]}",
-                    "AGENT",
-                )
-            except Exception:
-                pass
-
-            # Return error response
-            error_msg = f"LLM call failed during resume: {str(e)}"
-            response = AgentResponse(
-                content=error_msg,
-                iterations=iteration,
-                success=False,
-            )
-            # Notify callbacks: agent finish
-            for callback in self.callbacks:
-                callback.on_agent_finish(False, iteration, error_msg)
-
-            # Raise exception so orchestrator knows the agent failed
-            raise Exception(error_msg) from e
+        # Get LLM response
+        loop = asyncio.get_event_loop()
+        llm_output = await loop.run_in_executor(None, self.llm.chat, resume_prompt)
 
         # Notify callbacks: LLM response
         for callback in self.callbacks:
             callback.on_llm_response(iteration, llm_output)
 
-        # Continue execution loop
+        # Continue execution loop from where we left off
         while iteration < self.max_iterations:
             iteration += 1
 
@@ -590,17 +644,16 @@ class Agent:
             for callback in self.callbacks:
                 callback.on_iteration_start(iteration, self.name)
 
-            # Try to parse LLM output (with retries)
+            # Parse LLM output
             action = await self._parse_with_retry(llm_output, iteration)
 
             if action is None:
-                # Failed to parse after retries
+                # Failed to parse
                 response = AgentResponse(
                     content="Failed to parse LLM output after multiple attempts.",
                     iterations=iteration,
                     success=False,
                 )
-                # Notify callbacks: agent finish
                 for callback in self.callbacks:
                     callback.on_agent_finish(False, iteration, response.content)
                 return response
@@ -617,61 +670,25 @@ class Agent:
             for callback in self.callbacks:
                 callback.on_parse_success(iteration, action.type, action_details)
 
-            # Log agent thought and action (for root agent only)
-            try:
-                from agent.async_logger import get_logger
-
-                logger = get_logger()
-                if logger.agent_levels.get(agent_id, 0) == 0:
-                    # Log thought first (if present)
-                    if action.thought:
-                        await logger.agent_thought(agent_id, action.thought)
-
-                    # Then log action decision
-                    if action.type == "tool":
-                        await logger.agent_action(
-                            agent_id, "tool", f"Calling {action.tool_name}"
-                        )
-                    elif action.type == "launch_subagents":
-                        agents_str = ", ".join(action.agents or [])
-                        await logger.agent_action(
-                            agent_id, "launch_subagents", f"Agents: {agents_str}"
-                        )
-                    elif action.type == "wait_for_subagents":
-                        await logger.agent_action(
-                            agent_id, "wait_for_subagents", "Waiting for subagents"
-                        )
-                    elif action.type == "finish":
-                        preview = (action.content or "")[:50]
-                        await logger.agent_action(
-                            agent_id, "finish", f"Result: {preview}"
-                        )
-            except Exception:
-                pass
-
-            # Execute action based on type
+            # Execute action
             if action.type == "finish":
-                # Agent decided to finish
                 response = AgentResponse(
                     content=action.content or "",
                     iterations=iteration,
                     success=True,
                 )
-                # Notify callbacks: agent finish
                 for callback in self.callbacks:
                     callback.on_agent_finish(True, iteration, response.content)
-
-                # Notify callbacks: iteration end
                 for callback in self.callbacks:
                     callback.on_iteration_end(iteration, action.type)
 
-                # Mark as completed in orchestrator
+                # Mark as completed
                 from agent.orchestrator import AgentOrchestrator
 
                 orchestrator = AgentOrchestrator()
                 await orchestrator.mark_agent_completed(agent_id, response)
 
-                # Log agent finish
+                # Log finish
                 try:
                     from agent.async_logger import get_logger
 
@@ -683,7 +700,6 @@ class Agent:
                 return response
 
             elif action.type == "tool":
-                # Execute tool
                 observation = await self._execute_tool(action, iteration, agent_id)
 
                 # Notify callbacks and send tool result with clear marker
@@ -696,36 +712,36 @@ class Agent:
                 llm_output = await loop.run_in_executor(
                     None, lambda: self.llm.chat(tool_result_msg)
                 )
-
-                # Notify callbacks: LLM response
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
 
             elif action.type == "launch_subagents":
-                # Launch subagents (instant, non-blocking)
                 result = await self._launch_subagents(
-                    action,
-                    iteration,
-                    agent_id,
-                    launched_subagents,
-                    pending_subagents,
+                    action, iteration, agent_id, launched_subagents, pending_subagents
                 )
-
-                # Notify callbacks: LLM request
                 for callback in self.callbacks:
                     callback.on_llm_request(iteration, result, None)
-
                 llm_output = await loop.run_in_executor(None, self.llm.chat, result)
-
-                # Notify callbacks: LLM response
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
 
-            elif action.type == "wait_for_subagents":
+            elif action.type == "send_message":
+                observation = await self._execute_send_message(action, agent_id)
+                for callback in self.callbacks:
+                    callback.on_llm_request(
+                        iteration, f"Observation: {observation}", None
+                    )
+                llm_output = await loop.run_in_executor(
+                    None, self.llm.chat, f"Observation: {observation}"
+                )
+                for callback in self.callbacks:
+                    callback.on_llm_response(iteration, llm_output)
+
+            elif action.type == "wait":
                 # Save state and suspend again
                 state = AgentState(
                     agent_id=agent_id,
-                    task=task,
+                    task=state.task,
                     iteration=iteration,
                     llm_history=self.llm.get_history(),
                     launched_subagents=launched_subagents,
@@ -739,25 +755,27 @@ class Agent:
                 orchestrator = AgentOrchestrator()
                 await orchestrator.save_agent_state(agent_id, state)
 
-                # Log agent suspended (console only for root agent)
+                # Check queued messages
+                await orchestrator.check_queued_messages(agent_id)
+
+                # Log suspension
                 try:
                     from agent.async_logger import get_logger
 
                     logger = get_logger()
                     pending_names = list(pending_subagents.keys())
                     await logger.agent_suspended(
-                        agent_id, f"Waiting for: {', '.join(pending_names)}"
+                        agent_id,
+                        f"Waiting for: {', '.join(pending_names) if pending_names else 'messages'}",
                     )
                 except Exception:
                     pass
 
-                # Notify callbacks: agent suspended
                 for callback in self.callbacks:
                     callback.on_iteration_end(iteration, action.type)
 
-                # Return early - will be resumed by orchestrator
                 return AgentResponse(
-                    content="Agent suspended, waiting for subagents",
+                    content="Agent suspended, waiting for messages/subagents",
                     iterations=iteration,
                     success=True,
                 )
@@ -766,22 +784,15 @@ class Agent:
             for callback in self.callbacks:
                 callback.on_iteration_end(iteration, action.type)
 
-        # Reached max iterations - force a summary
-        summary_prompt = "You have reached the maximum number of iterations. Please provide a final summary of what you've accomplished."
-
-        # Notify callbacks: LLM request
+        # Max iterations reached
+        summary_prompt = "You have reached the maximum number of iterations. Please provide a final summary."
         for callback in self.callbacks:
             callback.on_llm_request(iteration, summary_prompt, None)
-
         llm_output = await loop.run_in_executor(None, self.llm.chat, summary_prompt)
-
-        # Notify callbacks: LLM response
         for callback in self.callbacks:
             callback.on_llm_response(iteration, llm_output)
 
         response = AgentResponse(content=llm_output, iterations=iteration, success=True)
-
-        # Notify callbacks: agent finish
         for callback in self.callbacks:
             callback.on_agent_finish(True, iteration, response.content)
 
@@ -994,6 +1005,67 @@ class Agent:
                     pass
 
             return result
+
+    async def _execute_send_message(self, action: Action, agent_id: str) -> str:
+        """
+        Send a message to a peer agent.
+
+        Args:
+            action: Action containing recipient and message
+            agent_id: ID of this agent
+
+        Returns:
+            Confirmation message or error
+        """
+        recipient = action.recipient
+        message_content = action.message
+
+        # Validate recipient
+        if recipient not in self.allowed_peers:
+            return f"❌ Cannot send message to '{recipient}'. Allowed peers: {self.allowed_peers}"
+
+        # Get orchestrator
+        from agent.orchestrator import AgentOrchestrator
+
+        orchestrator = AgentOrchestrator()
+
+        # Find recipient agent ID
+        recipient_id = orchestrator.find_agent_by_name(recipient, agent_id)
+        if not recipient_id:
+            return f"❌ Peer agent '{recipient}' not found or not registered"
+
+        # Create peer message
+        from agent.schemas import AgentMessage
+
+        peer_message = AgentMessage(
+            type="peer_message",
+            from_agent=agent_id,
+            to_agent=recipient_id,
+            payload={
+                "sender_name": self.name,
+                "message": message_content,
+            },
+            priority=5,  # Medium priority (higher than subagent completion)
+        )
+
+        # Send through orchestrator
+        await orchestrator.send_peer_message(peer_message)
+
+        # Log message send
+        try:
+            from agent.async_logger import get_logger
+
+            logger = get_logger()
+            await logger.tool_result(
+                agent_id,
+                "send_message",
+                f"Message sent to {recipient}: {message_content[:50]}...",
+                True,
+            )
+        except Exception:
+            pass
+
+        return f"✅ Message sent to {recipient}: {message_content[:50]}..."
 
     async def _launch_subagents(
         self,

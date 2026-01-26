@@ -58,10 +58,30 @@ class AgentOrchestrator:
         self.parent_child: Dict[str, List[str]] = defaultdict(list)
         self.child_parent: Dict[str, str] = {}
 
+        # NEW: Peer communication
+        self.agent_name_to_id: Dict[str, List[str]] = defaultdict(list)  # name -> [ids]
+        self.peer_message_queues: Dict[str, List[AgentMessage]] = defaultdict(
+            list
+        )  # agent_id -> queued messages
+        self.pending_state_messages: Dict[str, List[AgentMessage]] = defaultdict(
+            list
+        )  # Messages received before agent state is saved
+
         # Message processing
         self._processing = False
         self._start_time = time.time()
         self._processor_task = None
+
+    def _status_label(self, status: Optional[AgentStatus]) -> str:
+        """Return a human-readable label for an AgentStatus."""
+        mapping = {
+            AgentStatus.IDLE: "idle",
+            AgentStatus.RUNNING: "running",
+            AgentStatus.SUSPENDED: "wait",
+            AgentStatus.COMPLETED: "completed",
+            AgentStatus.FAILED: "failed",
+        }
+        return mapping.get(status, "unknown")
 
     def reset(self):
         """Reset the orchestrator (for testing)"""
@@ -75,6 +95,9 @@ class AgentOrchestrator:
         self.agents[agent_id] = agent
         self.agent_status[agent_id] = AgentStatus.IDLE
         self.completion_events[agent_id] = asyncio.Event()  # Create completion event
+
+        # NEW: Register name mapping for peer communication
+        self.agent_name_to_id[agent.name].append(agent_id)
 
         # Register with logger if available
         try:
@@ -133,19 +156,11 @@ class AgentOrchestrator:
             # Execute agent
             result = await agent._internal_run(task, agent_id)
 
-            # Notify parent on completion
-            if agent_id in self.child_parent:
-                parent_id = self.child_parent[agent_id]
-                message = AgentMessage(
-                    type="subagent_completed",
-                    from_agent=agent_id,
-                    to_agent=parent_id,
-                    payload={"agent_name": agent.name, "result": result.content},
-                    priority=0,
-                )
-                await self.send_message(message)
-
-            self.agent_status[agent_id] = AgentStatus.COMPLETED
+            # Check if agent is suspended (not truly completed)
+            current_status = self.agent_status.get(agent_id)
+            if current_status == AgentStatus.SUSPENDED:
+                # Agent is suspended (waiting), don't mark as completed
+                return
 
         except Exception as e:
             # Notify parent on failure
@@ -202,13 +217,17 @@ class AgentOrchestrator:
         # Load state
         state = self.agent_states.get(agent_id)
         if not state:
-            print(f"Warning: No state found for agent {agent_id}")
+            # Agent hasn't saved its state yet (still running). Queue message.
+            self.pending_state_messages[agent_id].append(message)
             return
 
-        # Update state based on message
-        agent_name = message.payload["agent_name"]
+        # Update state based on message type
+        agent_name = message.payload.get("agent_name", "")
 
-        if message.type == "subagent_completed":
+        if message.type == "peer_message":
+            # Add peer message to state for agent to process
+            state.peer_messages.append(message)
+        elif message.type == "subagent_completed":
             result = message.payload["result"]
             state.completed_results[agent_name] = result
             if agent_name in state.pending_subagents:
@@ -279,6 +298,13 @@ class AgentOrchestrator:
         """Save agent state and mark as suspended"""
         self.agent_states[agent_id] = state
         self.agent_status[agent_id] = AgentStatus.SUSPENDED
+        # Deliver any messages that arrived before the agent suspended
+        pending_messages = self.pending_state_messages.get(agent_id)
+        while pending_messages:
+            message = pending_messages.pop(0)
+            await self.send_message(message)
+        if pending_messages == []:
+            del self.pending_state_messages[agent_id]
 
     async def mark_agent_completed(self, agent_id: str, result: Any):
         """Mark agent as completed and signal completion event"""
@@ -286,6 +312,21 @@ class AgentOrchestrator:
         self.agent_results[agent_id] = result
         if agent_id in self.completion_events:
             self.completion_events[agent_id].set()
+
+        # Notify parent if this is a subagent
+        if agent_id in self.child_parent:
+            parent_id = self.child_parent[agent_id]
+            agent = self.agents.get(agent_id)
+            agent_name = agent.name if agent else agent_id
+            payload_result = getattr(result, "content", result)
+            message = AgentMessage(
+                type="subagent_completed",
+                from_agent=agent_id,
+                to_agent=parent_id,
+                payload={"agent_name": agent_name, "result": payload_result},
+                priority=0,
+            )
+            await self.send_message(message)
 
     async def wait_for_completion(self, agent_id: str) -> Any:
         """Wait for an agent to truly complete (not just suspend)"""
@@ -300,3 +341,130 @@ class AgentOrchestrator:
     def stop_processing(self):
         """Stop message processing"""
         self._processing = False
+
+    def find_agent_by_name(self, agent_name: str, requester_id: str) -> Optional[str]:
+        """
+        Find agent ID by name (sibling agent with same parent).
+
+        Args:
+            agent_name: Name of the agent to find
+            requester_id: ID of the requesting agent
+
+        Returns:
+            Agent ID if found and is a sibling, None otherwise
+        """
+        # Get requester's parent
+        requester_parent = self.child_parent.get(requester_id)
+        if not requester_parent:
+            return None  # Requester has no parent
+
+        # Find all agents with the target name
+        candidate_ids = self.agent_name_to_id.get(agent_name, [])
+
+        # Find the one with the same parent (sibling)
+        for candidate_id in candidate_ids:
+            if self.child_parent.get(candidate_id) == requester_parent:
+                return candidate_id
+
+        return None
+
+    async def send_peer_message(self, message: AgentMessage):
+        """
+        Send a peer-to-peer message.
+
+        If recipient is in SUSPENDED (wait) state, immediately wake them up.
+        Otherwise, queue the message for later processing.
+        """
+        recipient_id = message.to_agent
+        recipient_status = self.agent_status.get(recipient_id)
+
+        sender_name = message.payload.get("sender_name", "unknown")
+        message_content = message.payload.get("message", "")
+        recipient_agent = self.agents.get(recipient_id)
+        if recipient_agent:
+            recipient_name = recipient_agent.name
+        else:
+            recipient_name = recipient_id
+        status_label = self._status_label(recipient_status)
+
+        # Debug logging
+        try:
+            from agent.async_logger import get_logger, LogLevel
+
+            logger = get_logger()
+            await logger.log(
+                LogLevel.INFO,
+                recipient_id,
+                f"📨 [{sender_name} -> {recipient_name}]发送信息，对方状态是{status_label}，信息内容：{message_content}",
+                "COMM",
+            )
+        except Exception:
+            pass
+
+        if recipient_status == AgentStatus.SUSPENDED:
+            # Recipient is waiting - deliver immediately
+            await self.send_message(message)
+
+            # Log immediate delivery
+            try:
+                from agent.async_logger import get_logger, LogLevel
+
+                logger = get_logger()
+                await logger.log(
+                    LogLevel.INFO,
+                    recipient_id,
+                    f"📬 [{sender_name} -> {recipient_name}]收到信息（立即送达），内容：{message_content}",
+                    "COMM",
+                )
+            except Exception:
+                pass
+        else:
+            # Recipient is busy - queue the message
+            self.peer_message_queues[recipient_id].append(message)
+
+            # Log queuing
+            try:
+                from agent.async_logger import get_logger, LogLevel
+
+                logger = get_logger()
+                await logger.log(
+                    LogLevel.INFO,
+                    recipient_id,
+                    f"📥 [{sender_name} -> {recipient_name}]信息暂存在队列中，对方状态仍是{status_label}，内容：{message_content}",
+                    "COMM",
+                )
+            except Exception:
+                pass
+
+    async def check_queued_messages(self, agent_id: str):
+        """
+        Check if there are queued peer messages and deliver the first one.
+
+        Called when an agent enters wait state or completes a task.
+        """
+        queued_messages = self.peer_message_queues.get(agent_id, [])
+        if queued_messages:
+            # Deliver first queued message
+            message = queued_messages.pop(0)
+            await self.send_message(message)
+
+            # Log delivery
+            try:
+                from agent.async_logger import get_logger, LogLevel
+
+                logger = get_logger()
+                sender_name = message.payload.get("sender_name", "unknown")
+                message_content = message.payload.get("message", "")
+                recipient_agent = self.agents.get(agent_id)
+                if recipient_agent:
+                    recipient_name = recipient_agent.name
+                else:
+                    recipient_name = agent_id
+                await logger.log(
+                    LogLevel.INFO,
+                    agent_id,
+                    f"📬 [{sender_name} -> {recipient_name}]收到信息（来自队列），内容：{message_content}",
+                    "COMM",
+                )
+            except Exception:
+                pass
