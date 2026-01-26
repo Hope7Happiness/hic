@@ -8,10 +8,16 @@ This framework provides four core abstractions:
 4. Agent: The core element that uses tools and delegates to subagents
 5. Callbacks: Observability hooks for monitoring and logging agent execution
 6. Config: Utilities for loading API keys and configuration
+
+Supported LLM Providers:
+- OpenAI (GPT-3.5, GPT-4, etc.)
+- DeepSeek (deepseek-chat)
+- GitHub Copilot (claude-sonnet-4.5, claude-haiku-4.5, gpt-4o, o1-preview, etc.)
 """
 
 from agent.llm import LLM, OpenAILLM
 from agent.deepseek_llm import DeepSeekLLM
+from agent.copilot_llm import CopilotLLM
 from agent.tool import Tool
 from agent.agent import Agent
 from agent.orchestrator import AgentOrchestrator
@@ -44,6 +50,7 @@ __all__ = [
     "LLM",
     "OpenAILLM",
     "DeepSeekLLM",
+    "CopilotLLM",
     "Tool",
     "Agent",
     "AgentOrchestrator",

@@ -6,9 +6,15 @@ A type-safe, hierarchical LLM agent framework built with Python, Pydantic, and e
 
 ## Features
 
-- **Extensible LLM Support**: Abstract base class for implementing any LLM provider (OpenAI included)
+- **Extensible LLM Support**: Abstract base class for implementing any LLM provider
+  - OpenAI (GPT-3.5, GPT-4)
+  - DeepSeek (deepseek-chat)
+  - **GitHub Copilot** (claude-sonnet-4.5, claude-haiku-4.5, gpt-4o, o1-preview, and more)
+  - Easy to add custom providers
 - **Type-Safe Tool System**: Create tools from Python functions with automatic type validation
 - **Hierarchical Agents**: Agents can delegate tasks to specialized subagents
+- **Async Execution**: Full async support with parallel subagent execution
+- **Real-Time Logging**: Hierarchical logging with incremental result reporting
 - **YAML Configuration**: Define complex agent structures using YAML files
 - **Automatic Parsing**: LLM outputs are parsed and validated using Pydantic schemas
 - **Error Handling**: Built-in retry logic for parsing errors and tool failures
@@ -61,6 +67,20 @@ openai_key = get_openai_api_key()
 if not deepseek_key:
     print("Please set DEEPSEEK_API_KEY in .env file")
 ```
+
+### GitHub Copilot Authentication
+
+GitHub Copilot uses OAuth device flow authentication (no API key needed in `.env`):
+
+```bash
+# First-time setup
+cd auth/copilot
+python cli.py auth login
+```
+
+The token is stored at `~/.config/mycopilot/github_token.json` and is automatically loaded by `CopilotLLM`.
+
+See the [GitHub Copilot section](#github-copilot-models) for detailed setup instructions.
 
 ## Quick Start
 
@@ -181,6 +201,94 @@ llm = OpenAILLM(
     top_p=0.9
 )
 ```
+
+### DeepSeek Models
+
+```python
+from agent import DeepSeekLLM, get_deepseek_api_key
+
+# Use DeepSeek
+api_key = get_deepseek_api_key()
+llm = DeepSeekLLM(
+    api_key=api_key,
+    model="deepseek-chat",
+    temperature=0.7
+)
+```
+
+### GitHub Copilot Models
+
+GitHub Copilot provides access to multiple high-quality models through a single API.
+
+#### Setup (First Time Only)
+
+1. **Create GitHub OAuth App**:
+   - Go to https://github.com/settings/developers
+   - Click "OAuth Apps" → "New OAuth App"
+   - Fill in:
+     - Application name: Any name (e.g., "My Copilot CLI")
+     - Homepage URL: `http://localhost`
+     - Authorization callback URL: `http://localhost`
+   - **Enable device flow** (important!)
+   - Copy the **Client ID**
+
+2. **Configure Client ID**:
+   ```bash
+   # Edit auth/copilot/auth.py
+   # Replace: CLIENT_ID = "YOUR_ID"
+   # With your actual Client ID
+   ```
+
+3. **Authenticate**:
+   ```bash
+   cd auth/copilot
+   python cli.py auth login
+   ```
+   Follow the prompts to complete OAuth authentication.
+
+4. **Verify**:
+   ```bash
+   # List available models
+   python cli.py models
+   
+   # Test a simple chat
+   python cli.py run "Hello" claude-haiku-4.5
+   ```
+
+#### Using Copilot in Code
+
+```python
+from agent import Agent, CopilotLLM, Tool
+
+# Create Copilot LLM (uses token from ~/.config/mycopilot/github_token.json)
+llm = CopilotLLM(
+    model="claude-haiku-4.5",  # Fast and cost-effective
+    temperature=0.7,
+)
+
+# Create agent with tools
+agent = Agent(
+    llm=llm,
+    tools=[your_tools],
+    name="MyAgent",
+    system_prompt="Your system prompt",
+)
+
+# Run agent
+result = await agent._run_async(task="Your task")
+```
+
+**Available Copilot Models**:
+- `claude-sonnet-4.5` - Balanced performance (recommended)
+- `claude-haiku-4.5` - Fast and cost-effective
+- `gpt-4o` - Latest GPT-4 optimized
+- `gpt-4o-mini` - Smaller, faster GPT-4
+- `o1-preview` - Advanced reasoning
+- `o1-mini` - Compact reasoning model
+
+**See full example**: `examples/copilot_example.py`
+
+**Documentation**: See `auth/copilot/README.md` for detailed setup and troubleshooting.
 
 ### Custom LLM Implementation
 
@@ -461,10 +569,65 @@ pytest tests/test_tool.py
 # Run with verbose output
 pytest -v
 
+# Test Copilot authentication (requires Copilot setup)
+pytest tests/test_copilot_auth.py -v
+# Or run directly for detailed output:
+python tests/test_copilot_auth.py
+
+# Test real-time reporting behavior
+pytest tests/test_realtime_reporting.py -v
+
+# Test with specific LLM
+pytest tests/test_realtime_reporting.py -k deepseek -v
+pytest tests/test_realtime_reporting.py -k copilot -v
+
 # Note: test_llm.py requires OPENAI_API_KEY to be set
 export OPENAI_API_KEY=your_key_here
 pytest tests/test_llm.py
 ```
+
+### Real-Time Reporting Test
+
+The `test_realtime_reporting.py` validates that agents report results incrementally (in real-time) rather than batching all results at the end. This is crucial for user experience in long-running agent tasks.
+
+**What it tests:**
+- Parent agent launches 2 sub-agents in parallel:
+  - WeatherAgent (3 seconds) - Queries weather for Beijing
+  - StockAgent (10 seconds) - Queries stock price for Apple
+- When WeatherAgent finishes first, parent IMMEDIATELY reports the weather data in its Thought
+- Parent continues waiting for StockAgent (doesn't finish early)
+- When StockAgent finishes, parent reports the stock data
+- All workflow steps must occur in the correct order
+
+**Key features demonstrated:**
+- **Async Parallel Execution**: Both sub-agents run concurrently, not sequentially
+- **Real-Time Incremental Reporting**: Results reported as they arrive, not batched at end
+- **Error Handling**: Properly handles LLM API failures (e.g., 429 rate limits)
+- **Independent LLM Instances**: Each agent gets its own LLM instance to prevent history contamination
+- **Strict Validation**: Validates actual weather/stock data content, not just agent names
+
+**Run the test:**
+```bash
+# Run with both DeepSeek and Copilot LLMs
+pytest tests/test_realtime_reporting.py -v
+
+# Run with specific LLM only
+pytest tests/test_realtime_reporting.py -k deepseek -v
+pytest tests/test_realtime_reporting.py -k copilot -v
+```
+
+**Expected behavior:**
+1. Parent receives task: "查询北京天气和苹果股票价格"
+2. Parent launches WeatherAgent and StockAgent in parallel
+3. Parent suspends and waits
+4. WeatherAgent completes (~3s) → Parent resumes
+5. Parent's Thought mentions actual weather data (temperature, condition, location)
+6. Parent continues waiting for StockAgent
+7. StockAgent completes (~10s) → Parent resumes again
+8. Parent's Thought mentions actual stock data
+9. Parent finishes with complete summary
+
+This test ensures the framework provides responsive, real-time feedback to users even when some sub-tasks take much longer than others.
 
 ## Project Structure
 
@@ -472,31 +635,45 @@ pytest tests/test_llm.py
 hic/
 ├── agent/
 │   ├── __init__.py
-│   ├── llm.py           # LLM wrapper
-│   ├── deepseek_llm.py  # DeepSeek implementation
-│   ├── tool.py          # Tool system
-│   ├── agent.py         # Agent logic
-│   ├── skill.py         # YAML loading
-│   ├── schemas.py       # Pydantic models
-│   ├── parser.py        # Output parser
-│   └── callbacks.py     # Callback system
+│   ├── llm.py              # LLM abstract base class
+│   ├── deepseek_llm.py     # DeepSeek implementation
+│   ├── copilot_llm.py      # GitHub Copilot implementation
+│   ├── tool.py             # Tool system
+│   ├── agent.py            # Agent logic
+│   ├── skill.py            # YAML loading
+│   ├── schemas.py          # Pydantic models
+│   ├── parser.py           # Output parser
+│   ├── callbacks.py        # Callback system
+│   ├── orchestrator.py     # Async orchestration
+│   └── async_logger.py     # Async logging
+├── auth/
+│   └── copilot/            # GitHub Copilot authentication
+│       ├── auth.py         # OAuth device flow
+│       ├── chat.py         # Chat API client
+│       ├── cli.py          # CLI tool
+│       ├── config.py       # Token management
+│       ├── models.py       # Model listing
+│       └── README.md       # Setup guide
 ├── tests/
-│   ├── test_llm.py
-│   ├── test_tool.py
-│   ├── test_agent.py
-│   ├── test_skill.py
-│   ├── test_callbacks.py    # Callback tests
-│   ├── test_integration.py  # Integration tests
-│   ├── test_utils.py        # Test tools
-│   └── fixtures/            # Test YAML files
+│   ├── test_llm.py                 # LLM implementations tests
+│   ├── test_llm_abstract.py        # Abstract LLM base class tests
+│   ├── test_tool.py                # Tool creation & validation tests
+│   ├── test_skill.py               # YAML skill loading tests
+│   ├── test_async_basic.py         # Async parallel execution tests
+│   ├── test_realtime_reporting.py  # Real-time reporting behavior tests
+│   ├── test_copilot_auth.py        # Copilot authentication tests
+│   └── test_utils.py               # Utility functions tests
 ├── examples/
 │   ├── simple_agent.py
 │   ├── custom_llm.py
 │   ├── deepseek_agent.py
+│   ├── copilot_example.py              # Copilot usage example
 │   ├── skill_with_deepseek.py
 │   ├── complex_agent_verbose.py
-│   ├── agent_with_callbacks.py         # Callback examples
-│   └── complex_integrated_test_cn.py   # Complex test with Chinese output
+│   ├── agent_with_callbacks.py
+│   ├── async_parallel_agents.py        # Async agent example
+│   ├── async_parallel_agents_real.py   # Real-time reporting
+│   └── complex_integrated_test_cn.py
 ├── pyproject.toml
 └── README.md
 ```
@@ -509,11 +686,14 @@ The framework includes several examples demonstrating different features:
 - **`simple_agent.py`** - Basic agent with tools
 - **`custom_llm.py`** - Implementing custom LLM providers
 - **`deepseek_agent.py`** - Using DeepSeek LLM
+- **`copilot_example.py`** - Using GitHub Copilot LLM (requires authentication)
 - **`skill_with_deepseek.py`** - YAML skill configuration
 
 ### Advanced Examples
 - **`complex_agent_verbose.py`** - Detailed logging example (English)
 - **`agent_with_callbacks.py`** - Callback system demonstration
+- **`async_parallel_agents.py`** - Async parallel agent execution
+- **`async_parallel_agents_real.py`** - Real-time reporting with incremental results
 - **`complex_integrated_test_cn.py`** - Complex integrated test with Chinese output
   - Real-world data analysis workflow
   - Multiple tools (Python execution, file I/O, data query)
@@ -525,6 +705,7 @@ The framework includes several examples demonstrating different features:
 Run any example:
 ```bash
 python examples/simple_agent.py
+python examples/copilot_example.py  # Requires GitHub Copilot authentication
 python examples/complex_integrated_test_cn.py
 ```
 

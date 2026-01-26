@@ -14,15 +14,92 @@ Expected behavior:
 - WeatherAgent finishes at ~3s -> Parent immediately reports weather
 - StockAgent finishes at ~10s -> Parent immediately reports stock price
 - Parent then provides final summary
+
+Usage:
+    # Use Copilot (default)
+    python examples/async_parallel_agents_real.py
+
+    # Use DeepSeek
+    python examples/async_parallel_agents_real.py --llm deepseek
+    # or
+    LLM_PROVIDER=deepseek python examples/async_parallel_agents_real.py
 """
 
 import asyncio
 import time
+import os
+import sys
 from agent.agent import Agent
+from agent.copilot_llm import CopilotLLM
 from agent.deepseek_llm import DeepSeekLLM
 from agent.tool import Tool
 from agent.async_logger import init_logger, close_logger
 from agent.config import load_env, get_deepseek_api_key
+
+
+# ============================================================================
+# LLM Provider Configuration
+# ============================================================================
+
+
+def get_llm_provider():
+    """
+    Get LLM provider from environment variable or command line.
+
+    Priority:
+    1. Command line argument: --llm copilot/deepseek
+    2. Environment variable: LLM_PROVIDER=copilot/deepseek
+    3. Default: copilot
+
+    Returns:
+        str: "copilot" or "deepseek"
+    """
+    # Check command line arguments
+    if "--llm" in sys.argv:
+        idx = sys.argv.index("--llm")
+        if idx + 1 < len(sys.argv):
+            provider = sys.argv[idx + 1].lower()
+            if provider in ["copilot", "deepseek"]:
+                return provider
+
+    # Check environment variable
+    provider = os.environ.get("LLM_PROVIDER", "copilot").lower()
+    if provider in ["copilot", "deepseek"]:
+        return provider
+
+    # Default
+    return "copilot"
+
+
+def create_llm(provider: str | None = None):
+    """
+    Create LLM instance based on provider.
+
+    Args:
+        provider: "copilot" or "deepseek" (auto-detect if None)
+
+    Returns:
+        LLM instance
+    """
+    if provider is None:
+        provider = get_llm_provider()
+
+    if provider == "deepseek":
+        api_key = get_deepseek_api_key()
+        if not api_key:
+            raise ValueError(
+                "DEEPSEEK_API_KEY not found. Please set it in .env file or environment."
+            )
+        print(f"🤖 Using DeepSeek LLM (model: deepseek-chat)")
+        return DeepSeekLLM(api_key=api_key, model="deepseek-chat")
+    else:  # copilot
+        print(f"🤖 Using GitHub Copilot LLM (model: claude-haiku-4.5)")
+        return CopilotLLM(model="claude-haiku-4.5", temperature=0.7)
+
+
+# ============================================================================
+# Tools and Agents
+# ============================================================================
 
 
 def create_weather_tool() -> Tool:
@@ -81,7 +158,7 @@ def create_stock_tool() -> Tool:
     return Tool(get_stock_price)
 
 
-def create_weather_agent() -> Agent:
+def create_weather_agent(llm) -> Agent:
     """
     Create weather agent that fetches weather data for Beijing.
 
@@ -89,11 +166,10 @@ def create_weather_agent() -> Agent:
     1. Use get_weather tool to fetch weather for Beijing
     2. Takes ~3 seconds to complete
     3. Return weather information
+
+    Args:
+        llm: LLM instance (independent from other agents)
     """
-    api_key = get_deepseek_api_key()
-    if not api_key:
-        raise ValueError("DEEPSEEK_API_KEY not found in environment")
-    llm = DeepSeekLLM(api_key=api_key, model="deepseek-chat")
     weather_tool = create_weather_tool()
 
     system_prompt = """你是一个天气查询Agent。
@@ -115,7 +191,7 @@ def create_weather_agent() -> Agent:
     return agent
 
 
-def create_stock_agent() -> Agent:
+def create_stock_agent(llm) -> Agent:
     """
     Create stock agent that fetches stock price for AAPL.
 
@@ -123,11 +199,10 @@ def create_stock_agent() -> Agent:
     1. Use get_stock_price tool to fetch AAPL stock price
     2. Takes ~10 seconds to complete
     3. Return stock price information
+
+    Args:
+        llm: LLM instance (independent from other agents)
     """
-    api_key = get_deepseek_api_key()
-    if not api_key:
-        raise ValueError("DEEPSEEK_API_KEY not found in environment")
-    llm = DeepSeekLLM(api_key=api_key, model="deepseek-chat")
     stock_tool = create_stock_tool()
 
     system_prompt = """你是一个股票查询Agent。
@@ -162,14 +237,19 @@ def create_parent_agent() -> Agent:
 
     This demonstrates real-time streaming behavior where results are
     reported as soon as they're available, not all at once.
-    """
-    api_key = get_deepseek_api_key()
-    if not api_key:
-        raise ValueError("DEEPSEEK_API_KEY not found in environment")
-    llm = DeepSeekLLM(api_key=api_key, model="deepseek-chat")
 
-    weather_agent = create_weather_agent()
-    stock_agent = create_stock_agent()
+    IMPORTANT: Each agent (parent, weather, stock) gets its own independent LLM instance
+    to prevent conversation history contamination.
+    """
+    parent_llm = create_llm()
+
+    # Create independent LLM instances for each subagent
+    # This prevents conversation history sharing between agents
+    weather_llm = create_llm()
+    stock_llm = create_llm()
+
+    weather_agent = create_weather_agent(weather_llm)
+    stock_agent = create_stock_agent(stock_llm)
 
     system_prompt = """你是一个信息查询协调Agent。
 
@@ -212,7 +292,7 @@ def create_parent_agent() -> Agent:
 """
 
     agent = Agent(
-        llm=llm,
+        parent_llm,
         subagents={
             "WeatherAgent": weather_agent,
             "StockAgent": stock_agent,
@@ -230,9 +310,12 @@ async def main():
     # Load environment variables
     load_env()
 
+    # Get LLM provider
+    provider = get_llm_provider()
+
     # Initialize async logger
     print("=" * 70)
-    print("Real-Time Reporting Example with Parallel Subagents")
+    print(f"Real-Time Reporting Example with Parallel Subagents ({provider.upper()})")
     print("=" * 70)
     print()
     print("Scenario:")
