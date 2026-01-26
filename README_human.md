@@ -2,6 +2,8 @@
 
 > A type-safe, hierarchical LLM agent framework with **async parallel execution**, tool calling, and comprehensive logging.
 
+> **🤖 For AI Assistants**: Need to set up GitHub Copilot? See [AI_COPILOT_SETUP.md](AI_COPILOT_SETUP.md) for detailed step-by-step instructions.
+
 ## TL;DR
 
 Build AI agents that can use tools, delegate to sub-agents, and **run sub-agents in parallel** for maximum efficiency.
@@ -81,6 +83,27 @@ if not deepseek_key:
     print("❌ Please set DEEPSEEK_API_KEY in .env file")
 ```
 
+### GitHub Copilot Setup
+
+**🤖 Era of AI Assistants!**: Use an AI assistant to set up Copilot automatically! Just share [AI_COPILOT_SETUP.md](AI_COPILOT_SETUP.md) with your AI assistant and it will guide you through the entire process.
+
+**Manual Setup:**
+
+1. Create GitHub OAuth App at https://github.com/settings/developers
+2. Enable device flow in the OAuth App settings
+3. Run authentication:
+   ```bash
+   cd auth/copilot
+   python cli.py auth login
+   ```
+4. Test:
+   ```bash
+   python cli.py models
+   python examples/copilot_example.py
+   ```
+
+For detailed instructions, see [auth/copilot/README.md](auth/copilot/README.md).
+
 ## Run Examples
 
 ### 🌟 Async Parallel Agents (NEW!)
@@ -134,9 +157,63 @@ pytest tests/ -v
 # Run async-specific tests
 pytest tests/test_async_basic.py -v
 
+# Test real-time reporting behavior
+pytest tests/test_realtime_reporting.py -v
+
+# Test with specific LLM
+pytest tests/test_realtime_reporting.py -k deepseek -v
+pytest tests/test_realtime_reporting.py -k copilot -v
+
+# Test Copilot authentication (requires Copilot setup)
+pytest tests/test_copilot_auth.py -v
+# Or run directly for detailed output:
+python tests/test_copilot_auth.py
+
 # Run fast tests only (skip LLM API calls)
 pytest tests/ -v -m "not integration"
 ```
+
+### Real-Time Reporting Test
+
+The `test_realtime_reporting.py` is a critical test that ensures agents provide real-time feedback to users, not batch results at the end.
+
+**Why it matters:**
+Imagine you ask an agent to check weather (3 seconds) and stock prices (10 seconds). You don't want to wait 13 seconds for both results - you want to see the weather immediately when it's ready!
+
+**What the test does:**
+1. Parent agent receives: "查询北京天气和苹果股票价格" (Check Beijing weather and Apple stock)
+2. Parent launches 2 sub-agents in parallel:
+   - WeatherAgent (3s) - Fast task
+   - StockAgent (10s) - Slow task
+3. WeatherAgent finishes first → Parent IMMEDIATELY reports weather data (temperature, conditions, location)
+4. Parent continues waiting for StockAgent (doesn't finish early)
+5. StockAgent finishes → Parent reports stock data
+6. Parent finishes with complete summary
+
+**Key validation:**
+- Checks for ACTUAL weather data (not just "WeatherAgent" name):
+  - Weather conditions: 晴天, 阴天, cloudy, etc.
+  - Temperature: 15°C, 气温：20度, etc.
+  - Location: 北京, Beijing
+- All 12 workflow steps must occur in correct order
+- Parent must report results incrementally, not batch at end
+
+**Run the test:**
+```bash
+# Test with both LLMs
+pytest tests/test_realtime_reporting.py -v
+
+# Test with specific LLM
+pytest tests/test_realtime_reporting.py -k deepseek -v
+pytest tests/test_realtime_reporting.py -k copilot -v
+```
+
+**Technical features demonstrated:**
+- Async parallel execution (not sequential)
+- Real-time incremental reporting
+- Error handling for API failures (429 rate limits)
+- Independent LLM instances per agent (prevents history contamination)
+- Strict log validation
 
 ## Key Features Explained
 
@@ -313,9 +390,14 @@ hic/
 │
 ├── tests/                      # Test suite
 │   ├── test_async_basic.py    # Async parallel execution tests
+│   ├── test_realtime_reporting.py  # Real-time reporting behavior tests
 │   ├── test_tool.py           # Tool creation & validation
-│   ├── test_agent.py          # Agent execution tests
-│   └── ...
+│   ├── test_llm.py            # LLM implementations tests
+│   ├── test_llm_abstract.py   # Abstract LLM base class tests
+│   ├── test_skill.py          # YAML skill loading tests
+│   ├── test_copilot_auth.py   # Copilot authentication tests
+│   ├── test_utils.py          # Utility functions tests
+│   └── __init__.py
 │
 ├── examples/                   # Usage examples
 │   ├── async_parallel_agents.py    # 🌟 Async parallel execution demo

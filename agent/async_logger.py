@@ -252,17 +252,43 @@ class AsyncLogger:
         # Queue for async file write
         await self.write_queue.put((agent_id, file_msg))
 
-    async def agent_start(self, agent_id: str, task: str):
-        """Log agent start"""
+    async def agent_start(
+        self,
+        agent_id: str,
+        task: str,
+        system_prompt: Optional[str] = None,
+        tools: Optional[list[str]] = None,
+    ):
+        """Log agent start with configuration details"""
         await self.log(
             LogLevel.INFO, agent_id, f"🚀 Started with task: {task}", "AGENT"
         )
+
+        # Log system prompt (first 200 chars)
+        if system_prompt:
+            prompt_preview = system_prompt.replace("\n", " ")[:200]
+            if len(system_prompt) > 200:
+                prompt_preview += "..."
+            await self.log(
+                LogLevel.INFO, agent_id, f"📋 System Prompt: {prompt_preview}", "AGENT"
+            )
+
+        # Log available tools
+        if tools:
+            tools_str = ", ".join(tools)
+            await self.log(LogLevel.INFO, agent_id, f"🔧 Tools: [{tools_str}]", "AGENT")
 
     async def agent_finish(self, agent_id: str, success: bool, result: str):
         """Log agent finish"""
         emoji = "✅" if success else "❌"
         await self.log(
             LogLevel.INFO, agent_id, f"{emoji} Finished: {result[:100]}", "AGENT"
+        )
+
+    async def llm_first_request(self, agent_id: str, user_message: str):
+        """Log the first LLM request (task sent to LLM)"""
+        await self.log(
+            LogLevel.INFO, agent_id, f"📤 First LLM Request: {user_message}", "AGENT"
         )
 
     async def agent_suspended(self, agent_id: str, reason: str):

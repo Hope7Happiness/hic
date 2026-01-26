@@ -2,7 +2,7 @@
 Tests for LLM functionality.
 
 Test 1: test_llm_basic_response
-- Makes a real call to OpenAI API (or DeepSeek API with OpenAI-compatible interface)
+- Makes a real call to Copilot API (or falls back to OpenAI/DeepSeek if token file exists)
 - Verifies LLM can return text
 - Verifies history is maintained correctly
 """
@@ -16,57 +16,68 @@ def get_api_key():
     """
     Get API key from environment or file.
 
-    Prioritizes DeepSeek key from file, then falls back to OpenAI env variable.
+    Prioritizes Copilot (no key needed), then DeepSeek key from file, then OpenAI env variable.
 
     Returns:
-        Tuple of (api_key, is_deepseek) where is_deepseek indicates if using DeepSeek API
+        Tuple of (api_key, llm_type) where llm_type is "copilot", "deepseek", or "openai"
     """
-    # First try reading DeepSeek API key from file
+    # First try Copilot (check if token file exists)
+    from pathlib import Path
+
+    copilot_token = Path.home() / ".config" / "mycopilot" / "github_token.json"
+    if copilot_token.exists():
+        return None, "copilot"  # No API key needed for Copilot
+
+    # Then try reading DeepSeek API key from file (for backward compatibility with existing tests)
     key_file = "/home/zhh/看你妈呢"
     if os.path.exists(key_file):
         try:
             with open(key_file, "r") as f:
                 api_key = f.read().strip()
                 if api_key:
-                    return api_key, True  # Using DeepSeek
+                    return api_key, "deepseek"
         except Exception:
             pass
 
     # Fall back to OpenAI API key from environment
     api_key = os.environ.get("OPENAI_API_KEY")
     if api_key:
-        # Check if this looks like a DeepSeek key (starts with sk-)
-        # If the file exists, assume the env var is also DeepSeek key
-        if os.path.exists(key_file):
-            return api_key, True
-        return api_key, False  # Using OpenAI
+        return api_key, "openai"
 
-    return None, False
+    return None, None
 
 
 def test_llm_basic_response():
     """
     Test that LLM can make a basic API call and return a response.
 
-    This test requires API key to be available either:
-    - In the file /home/zhh/看你妈呢 (uses DeepSeek)
-    - In OPENAI_API_KEY environment variable (uses OpenAI if file doesn't exist)
+    This test requires either:
+    - Copilot authentication (token at ~/.config/mycopilot/github_token.json)
+    - DeepSeek API key in file /home/zhh/看你妈呢
+    - OpenAI API key in OPENAI_API_KEY environment variable
     """
     # Check if API key is available
-    api_key, is_deepseek = get_api_key()
-    if not api_key:
-        pytest.skip("API key not available - skipping real API test")
+    api_key, llm_type = get_api_key()
+    if not llm_type:
+        pytest.skip("No LLM available - skipping real API test")
 
-    # Use appropriate LLM based on which key we got
-    if is_deepseek:
-        # Use DeepSeek API
+    # Use appropriate LLM based on what's available
+    if llm_type == "copilot":
+        # Use Copilot API
+        from agent.copilot_llm import CopilotLLM
+
+        llm = CopilotLLM(model="claude-haiku-4.5", temperature=0.7)
+    elif llm_type == "deepseek":
+        # Use DeepSeek API (for backward compatibility)
         from agent.deepseek_llm import DeepSeekLLM
 
+        assert api_key is not None, "DeepSeek requires API key"
         llm = DeepSeekLLM(
             api_key=api_key, model="deepseek-chat", base_url="https://api.deepseek.com"
         )
     else:
         # Use OpenAI API
+        assert api_key is not None, "OpenAI requires API key"
         llm = OpenAILLM(model="gpt-3.5-turbo", temperature=0.7, api_key=api_key)
 
     # Test basic chat

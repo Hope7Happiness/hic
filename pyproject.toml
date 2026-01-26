@@ -8,6 +8,8 @@ dependencies = [
     "pydantic>=2.0.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "urllib3<2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -23,4 +25,7 @@ build-backend = "setuptools.build_meta"
 [tool.pytest.ini_options]
 markers = [
     "integration: Integration tests that require API keys and may take longer to run",
+    "slow: Tests that take more than 10 seconds to complete (e.g., real-time reporting tests with 3s+10s delays)",
 ]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
