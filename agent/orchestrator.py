@@ -1,0 +1,257 @@
+"""
+Agent Orchestrator - Central coordination for async agent execution.
+
+This module provides the AgentOrchestrator singleton that manages:
+- Agent registration and lifecycle
+- Subagent launching and callback handling
+- Message queue for agent communication
+- Agent state persistence and recovery
+"""
+
+import asyncio
+import time
+from typing import Dict, List, Optional, TYPE_CHECKING, Any
+from collections import defaultdict
+from agent.schemas import AgentStatus, AgentState, AgentMessage, LaunchedSubagent
+
+if TYPE_CHECKING:
+    from agent.agent import Agent
+
+
+class AgentOrchestrator:
+    """
+    Singleton orchestrator for managing async agent execution.
+
+    Handles:
+    - Agent registration
+    - Subagent launching (instant, non-blocking)
+    - Message passing between agents
+    - Agent suspension and resumption
+    """
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        if hasattr(self, "_initialized"):
+            return
+        self._initialized = True
+
+        # Core data structures
+        self.agents: Dict[str, "Agent"] = {}
+        self.agent_states: Dict[str, AgentState] = {}
+        self.agent_status: Dict[str, AgentStatus] = {}
+        self.running_tasks: Dict[str, asyncio.Task] = {}
+        self.completion_events: Dict[
+            str, asyncio.Event
+        ] = {}  # For waiting on completion
+        self.agent_results: Dict[str, Any] = {}  # Store final results
+
+        # Message queue
+        self.message_queue: asyncio.Queue = asyncio.Queue()
+
+        # Relationship graph
+        self.parent_child: Dict[str, List[str]] = defaultdict(list)
+        self.child_parent: Dict[str, str] = {}
+
+        # Message processing
+        self._processing = False
+        self._start_time = time.time()
+        self._processor_task = None
+
+    def reset(self):
+        """Reset the orchestrator (for testing)"""
+        self.__init__.__wrapped__(self)
+        self._initialized = False
+        self.__init__()
+
+    async def register_agent(self, agent: "Agent") -> str:
+        """Register an agent and return its ID"""
+        agent_id = f"{agent.name}_{id(agent)}"
+        self.agents[agent_id] = agent
+        self.agent_status[agent_id] = AgentStatus.IDLE
+        self.completion_events[agent_id] = asyncio.Event()  # Create completion event
+
+        # Register with logger if available
+        try:
+            from agent.async_logger import get_logger
+
+            logger = get_logger()
+            parent_id = self.child_parent.get(agent_id)
+            logger.register_agent(agent_id, agent.name, parent_id)
+        except Exception:
+            pass  # Logger not initialized, skip
+
+        return agent_id
+
+    async def launch_subagent(
+        self, parent_id: str, child_agent: "Agent", task: str
+    ) -> str:
+        """
+        Launch a subagent (returns immediately, doesn't wait).
+
+        Args:
+            parent_id: ID of the parent agent
+            child_agent: The subagent to launch
+            task: Task for the subagent
+
+        Returns:
+            child_id: ID of the launched subagent
+        """
+        # Register subagent
+        child_id = await self.register_agent(child_agent)
+
+        # Establish relationship
+        self.parent_child[parent_id].append(child_id)
+        self.child_parent[child_id] = parent_id
+
+        # Re-register with logger to update parent relationship
+        try:
+            from agent.async_logger import get_logger
+
+            logger = get_logger()
+            logger.register_agent(child_id, child_agent.name, parent_id)
+        except Exception:
+            pass
+
+        # Launch subagent asynchronously
+        self.agent_status[child_id] = AgentStatus.RUNNING
+        task_obj = asyncio.create_task(
+            self._run_agent_with_callback(child_id, child_agent, task)
+        )
+        self.running_tasks[child_id] = task_obj
+
+        return child_id
+
+    async def _run_agent_with_callback(self, agent_id: str, agent: "Agent", task: str):
+        """Run an agent and send a message to parent when done"""
+        try:
+            # Execute agent
+            result = await agent._internal_run(task, agent_id)
+
+            # Notify parent on completion
+            if agent_id in self.child_parent:
+                parent_id = self.child_parent[agent_id]
+                message = AgentMessage(
+                    type="subagent_completed",
+                    from_agent=agent_id,
+                    to_agent=parent_id,
+                    payload={"agent_name": agent.name, "result": result.content},
+                    priority=0,
+                )
+                await self.send_message(message)
+
+            self.agent_status[agent_id] = AgentStatus.COMPLETED
+
+        except Exception as e:
+            # Notify parent on failure
+            if agent_id in self.child_parent:
+                parent_id = self.child_parent[agent_id]
+                message = AgentMessage(
+                    type="subagent_failed",
+                    from_agent=agent_id,
+                    to_agent=parent_id,
+                    payload={"agent_name": agent.name, "error": str(e)},
+                    priority=10,  # Higher priority for errors
+                )
+                await self.send_message(message)
+
+            self.agent_status[agent_id] = AgentStatus.FAILED
+            raise
+
+    async def send_message(self, message: AgentMessage):
+        """Send a message to the queue"""
+        await self.message_queue.put(message)
+
+    async def start_message_processing(self):
+        """Start the message processing loop"""
+        if self._processing:
+            return
+
+        self._processing = True
+
+        while self._processing:
+            try:
+                message = await self.message_queue.get()
+                await self._handle_message(message)
+            except Exception as e:
+                print(f"Error processing message: {e}")
+                import traceback
+
+                traceback.print_exc()
+
+    async def _handle_message(self, message: AgentMessage):
+        """Handle a single message"""
+        to_agent_id = message.to_agent
+        agent = self.agents.get(to_agent_id)
+
+        if not agent:
+            print(f"Warning: Agent {to_agent_id} not found")
+            return
+
+        # Resume the parent agent
+        await self._resume_agent(to_agent_id, agent, message)
+
+    async def _resume_agent(self, agent_id: str, agent: "Agent", message: AgentMessage):
+        """Resume an agent from suspended state"""
+        # Load state
+        state = self.agent_states.get(agent_id)
+        if not state:
+            print(f"Warning: No state found for agent {agent_id}")
+            return
+
+        # Update state based on message
+        agent_name = message.payload["agent_name"]
+
+        if message.type == "subagent_completed":
+            result = message.payload["result"]
+            state.completed_results[agent_name] = result
+            if agent_name in state.pending_subagents:
+                state.pending_subagents[agent_name].status = "completed"
+                state.pending_subagents[agent_name].result = result
+                state.pending_subagents[agent_name].end_time = time.time()
+                del state.pending_subagents[agent_name]
+
+        elif message.type == "subagent_failed":
+            error = message.payload["error"]
+            if agent_name in state.pending_subagents:
+                state.pending_subagents[agent_name].status = "failed"
+                state.pending_subagents[agent_name].error = error
+                state.pending_subagents[agent_name].end_time = time.time()
+
+        # Mark as running
+        self.agent_status[agent_id] = AgentStatus.RUNNING
+
+        # Resume execution
+        task = asyncio.create_task(agent._internal_resume(state, message))
+        self.running_tasks[agent_id] = task
+
+    async def save_agent_state(self, agent_id: str, state: AgentState):
+        """Save agent state and mark as suspended"""
+        self.agent_states[agent_id] = state
+        self.agent_status[agent_id] = AgentStatus.SUSPENDED
+
+    async def mark_agent_completed(self, agent_id: str, result: Any):
+        """Mark agent as completed and signal completion event"""
+        self.agent_status[agent_id] = AgentStatus.COMPLETED
+        self.agent_results[agent_id] = result
+        if agent_id in self.completion_events:
+            self.completion_events[agent_id].set()
+
+    async def wait_for_completion(self, agent_id: str) -> Any:
+        """Wait for an agent to truly complete (not just suspend)"""
+        if agent_id in self.completion_events:
+            await self.completion_events[agent_id].wait()
+            return self.agent_results.get(agent_id)
+
+    def get_elapsed_time(self) -> float:
+        """Get elapsed time since orchestrator started"""
+        return time.time() - self._start_time
+
+    def stop_processing(self):
+        """Stop message processing"""
+        self._processing = False

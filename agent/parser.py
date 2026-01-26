@@ -2,30 +2,18 @@
 Parser for LLM text output.
 
 This module parses the LLM's text output into structured Action objects.
-The LLM is expected to follow this format:
 
-For tool calls:
-    Thought: <reasoning>
-    Action: tool
-    Tool: <tool_name>
-    Arguments: {"key": "value", ...}
-
-For subagent calls:
-    Thought: <reasoning>
-    Action: subagent
-    Agent: <agent_name>
-    Task: <task_description>
-
-For finishing:
-    Thought: <reasoning>
-    Action: finish
-    Response: <final_answer>
+Supported action types:
+1. tool - Call a tool with arguments
+2. launch_subagents - Launch one or more subagents (non-blocking)
+3. wait_for_subagents - Suspend and wait for subagents to complete
+4. finish - Complete with final response
 """
 
 import json
 import re
-from typing import Dict, Any, Optional
-from agent.schemas import Action, ToolCall, SubAgentCall
+from typing import List, Optional
+from agent.schemas import Action
 
 
 class ParseError(Exception):
@@ -49,16 +37,20 @@ Action: tool
 Tool: <tool_name>
 Arguments: <JSON dict of arguments>
 
-For calling a subagent:
+For launching subagents (can launch multiple at once):
 Thought: <your reasoning>
-Action: subagent
-Agent: <subagent_name>
-Task: <task for the subagent>
+Action: launch_subagents
+Agents: ["agent_name_1", "agent_name_2", ...]
+Tasks: ["task_1", "task_2", ...]
+
+For waiting for subagents to complete:
+Thought: <your reasoning>
+Action: wait_for_subagents
 
 For finishing:
 Thought: <your reasoning>
 Action: finish
-Response: <your final answer>
+Content: <your final answer>
 """.strip()
 
     @staticmethod
@@ -75,11 +67,11 @@ Response: <your final answer>
         Raises:
             ParseError: If the text cannot be parsed
         """
-        # Extract sections using regex
+        # Extract thought and action type
         thought_match = re.search(
             r"Thought:\s*(.+?)(?=\nAction:)", text, re.DOTALL | re.IGNORECASE
         )
-        action_match = re.search(r"Action:\s*(\w+)", text, re.IGNORECASE)
+        action_match = re.search(r"Action:\s*([\w_]+)", text, re.IGNORECASE)
 
         if not action_match:
             raise ParseError("Could not find 'Action:' in output")
@@ -87,18 +79,20 @@ Response: <your final answer>
         thought = thought_match.group(1).strip() if thought_match else None
         action_type = action_match.group(1).lower()
 
-        if action_type not in ["tool", "subagent", "finish"]:
-            raise ParseError(
-                f"Invalid action type: {action_type}. Must be 'tool', 'subagent', or 'finish'"
-            )
-
         # Parse based on action type
         if action_type == "tool":
             return OutputParser._parse_tool_action(text, thought)
-        elif action_type == "subagent":
-            return OutputParser._parse_subagent_action(text, thought)
-        else:  # finish
+        elif action_type == "launch_subagents":
+            return OutputParser._parse_launch_subagents_action(text, thought)
+        elif action_type == "wait_for_subagents":
+            return OutputParser._parse_wait_action(text, thought)
+        elif action_type == "finish":
             return OutputParser._parse_finish_action(text, thought)
+        else:
+            raise ParseError(
+                f"Invalid action type: {action_type}. "
+                f"Must be 'tool', 'launch_subagents', 'wait_for_subagents', or 'finish'"
+            )
 
     @staticmethod
     def _parse_tool_action(text: str, thought: Optional[str]) -> Action:
@@ -125,41 +119,85 @@ Response: <your final answer>
             arguments = {}
 
         return Action(
-            type="tool",
-            thought=thought,
-            tool_call=ToolCall(tool_name=tool_name, arguments=arguments),
+            type="tool", thought=thought, tool_name=tool_name, arguments=arguments
         )
 
     @staticmethod
-    def _parse_subagent_action(text: str, thought: Optional[str]) -> Action:
-        """Parse a subagent action."""
-        agent_match = re.search(r"Agent:\s*(.+?)(?=\n|$)", text, re.IGNORECASE)
-        task_match = re.search(
-            r"Task:\s*(.+?)(?=\n\n|$)", text, re.DOTALL | re.IGNORECASE
+    def _parse_launch_subagents_action(text: str, thought: Optional[str]) -> Action:
+        """Parse a launch_subagents action."""
+        # Extract Agents list
+        agents_match = re.search(
+            r"Agents:\s*\[(.*?)\]", text, re.DOTALL | re.IGNORECASE
         )
+        # Extract Tasks list
+        tasks_match = re.search(r"Tasks:\s*\[(.*?)\]", text, re.DOTALL | re.IGNORECASE)
 
-        if not agent_match:
-            raise ParseError("Subagent action requires 'Agent:' field")
-        if not task_match:
-            raise ParseError("Subagent action requires 'Task:' field")
+        if not agents_match:
+            raise ParseError("launch_subagents action requires 'Agents:' field")
+        if not tasks_match:
+            raise ParseError("launch_subagents action requires 'Tasks:' field")
 
-        agent_name = agent_match.group(1).strip()
-        task = task_match.group(1).strip()
+        # Parse agents list
+        agents_str = agents_match.group(1)
+        agents = OutputParser._parse_string_list(agents_str)
+
+        # Parse tasks list
+        tasks_str = tasks_match.group(1)
+        tasks = OutputParser._parse_string_list(tasks_str)
+
+        if len(agents) == 0:
+            raise ParseError("Cannot launch zero subagents")
+
+        if len(agents) != len(tasks):
+            raise ParseError(
+                f"Agents and Tasks lists must have the same length "
+                f"(got {len(agents)} agents and {len(tasks)} tasks)"
+            )
 
         return Action(
-            type="subagent",
-            thought=thought,
-            subagent_call=SubAgentCall(agent_name=agent_name, task=task),
+            type="launch_subagents", thought=thought, agents=agents, tasks=tasks
         )
+
+    @staticmethod
+    def _parse_string_list(list_str: str) -> List[str]:
+        """
+        Parse a string list like '"item1", "item2"' into ["item1", "item2"].
+
+        Also handles single quotes and mixed quotes.
+        """
+        # Try to parse as JSON first
+        try:
+            items = json.loads(f"[{list_str}]")
+            if isinstance(items, list):
+                return [str(item) for item in items]
+        except:
+            pass
+
+        # Fallback: manual parsing
+        # Find all quoted strings
+        items = re.findall(r'["\']([^"\']+)["\']', list_str)
+
+        if not items:
+            raise ParseError(f"Could not parse list: {list_str}")
+
+        return items
+
+    @staticmethod
+    def _parse_wait_action(text: str, thought: Optional[str]) -> Action:
+        """Parse a wait_for_subagents action."""
+        return Action(type="wait_for_subagents", thought=thought)
 
     @staticmethod
     def _parse_finish_action(text: str, thought: Optional[str]) -> Action:
         """Parse a finish action."""
-        response_match = re.search(r"Response:\s*(.+)", text, re.DOTALL | re.IGNORECASE)
+        # Try "Content:" first, fallback to "Response:"
+        content_match = re.search(
+            r"(?:Content|Response):\s*(.+)", text, re.DOTALL | re.IGNORECASE
+        )
 
-        if not response_match:
-            raise ParseError("Finish action requires 'Response:' field")
+        if not content_match:
+            raise ParseError("Finish action requires 'Content:' or 'Response:' field")
 
-        response = response_match.group(1).strip()
+        content = content_match.group(1).strip()
 
-        return Action(type="finish", thought=thought, response=response)
+        return Action(type="finish", thought=thought, content=content)

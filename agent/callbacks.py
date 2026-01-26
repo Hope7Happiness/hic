@@ -331,7 +331,16 @@ class MetricsCallback(AgentCallback):
 
 class ColorfulConsoleCallback(AgentCallback):
     """
-    Enhanced console callback with color support for hierarchical agents.
+    [DEPRECATED] Enhanced console callback with color support for hierarchical agents.
+
+    ⚠️ WARNING: This callback is deprecated. Use AsyncLogger instead.
+
+    The new AsyncLogger provides better async support, structured logging,
+    and per-agent log files. It is automatically initialized when you run an agent.
+
+    For more information, see: agent/async_logger.py
+
+    ---
 
     This callback tracks the agent execution stack and displays each agent's
     output in a different color with proper indentation. Perfect for visualizing
@@ -374,6 +383,15 @@ class ColorfulConsoleCallback(AgentCallback):
         verbose: bool = True,
         color_map: Optional[Dict[str, str]] = None,
     ):
+        import warnings
+
+        warnings.warn(
+            "ColorfulConsoleCallback is deprecated and will be removed in a future version. "
+            "Use AsyncLogger instead for better async support and structured logging. "
+            "See agent/async_logger.py for more information.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.verbose = verbose
         self.color_map = color_map or {}
         self._start_time = None
