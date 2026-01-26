@@ -191,6 +191,7 @@ class AsyncLogger:
         agent_id: str,
         message: str,
         category: Optional[str] = None,
+        console_only_for_root: bool = False,
     ):
         """
         Log a message.
@@ -200,6 +201,7 @@ class AsyncLogger:
             agent_id: Agent that generated the log
             message: Log message
             category: Optional category (TOOL, LLM, etc.)
+            console_only_for_root: If True, only print to console for root agents (level 0)
         """
         timestamp = self._get_timestamp()
         elapsed = self._get_elapsed()
@@ -214,8 +216,15 @@ class AsyncLogger:
         else:
             category_str = ""
 
+        # Determine if we should print to console
+        should_print_console = self.console_output
+        if console_only_for_root:
+            # Only print if this is a root agent (level 0)
+            agent_level = self.agent_levels.get(agent_id, 0)
+            should_print_console = should_print_console and (agent_level == 0)
+
         # Console output (colored)
-        if self.console_output:
+        if should_print_console:
             colored_level = self._colorize(level_str, level.value)
             # Use agent-specific color
             agent_color = self.agent_colors.get(agent_id, self.AGENT_COLORS[0])
@@ -232,7 +241,7 @@ class AsyncLogger:
 
             print(console_msg)
 
-        # File output (no colors)
+        # File output (no colors) - ALWAYS write to file regardless of level
         if category:
             file_msg = (
                 f"{timestamp} {level_str} [{agent_name}] {category_str} {message}"
@@ -258,17 +267,33 @@ class AsyncLogger:
 
     async def agent_suspended(self, agent_id: str, reason: str):
         """Log agent suspension"""
-        await self.log(LogLevel.INFO, agent_id, f"⏸️  Suspended: {reason}", "AGENT")
+        await self.log(
+            LogLevel.INFO,
+            agent_id,
+            f"⏸️  Suspended: {reason}",
+            "AGENT",
+            console_only_for_root=True,  # Only print for root agents
+        )
 
     async def agent_resumed(self, agent_id: str, trigger: str):
         """Log agent resumption"""
-        await self.log(LogLevel.INFO, agent_id, f"▶️  Resumed: {trigger}", "AGENT")
+        await self.log(
+            LogLevel.INFO,
+            agent_id,
+            f"▶️  Resumed: {trigger}",
+            "AGENT",
+            console_only_for_root=True,  # Only print for root agents
+        )
 
     async def tool_call(self, agent_id: str, tool_name: str, arguments: dict):
         """Log tool call"""
         args_str = str(arguments)[:50]
         await self.log(
-            LogLevel.INFO, agent_id, f"Calling {tool_name}({args_str}...)", "TOOL"
+            LogLevel.INFO,
+            agent_id,
+            f"Calling {tool_name}({args_str}...)",
+            "TOOL",
+            console_only_for_root=True,  # Only print for root agents
         )
 
     async def tool_result(
@@ -282,17 +307,30 @@ class AsyncLogger:
             agent_id,
             f"{emoji} {tool_name} → {result_preview}",
             "TOOL",
+            console_only_for_root=True,  # Only print for root agents
         )
 
     async def llm_request(self, agent_id: str, prompt_preview: str):
         """Log LLM request"""
         preview = prompt_preview[:60].replace("\n", " ")
-        await self.log(LogLevel.DEBUG, agent_id, f"Request: {preview}...", "LLM")
+        await self.log(
+            LogLevel.DEBUG,
+            agent_id,
+            f"Request: {preview}...",
+            "LLM",
+            console_only_for_root=True,  # Only print for root agents
+        )
 
     async def llm_response(self, agent_id: str, response_preview: str):
         """Log LLM response"""
         preview = response_preview[:80].replace("\n", " ")
-        await self.log(LogLevel.DEBUG, agent_id, f"Response: {preview}...", "LLM")
+        await self.log(
+            LogLevel.DEBUG,
+            agent_id,
+            f"Response: {preview}...",
+            "LLM",
+            console_only_for_root=True,  # Only print for root agents
+        )
 
     async def subagent_launch(self, parent_id: str, child_name: str, task: str):
         """Log subagent launch"""

@@ -349,16 +349,15 @@ class Agent:
                 orchestrator = AgentOrchestrator()
                 await orchestrator.save_agent_state(agent_id, state)
 
-                # Log agent suspended (for root agent only)
+                # Log agent suspended (console only for root agent)
                 try:
                     from agent.async_logger import get_logger
 
                     logger = get_logger()
-                    if logger.agent_levels.get(agent_id, 0) == 0:
-                        pending_names = list(pending_subagents.keys())
-                        await logger.agent_suspended(
-                            agent_id, f"Waiting for: {', '.join(pending_names)}"
-                        )
+                    pending_names = list(pending_subagents.keys())
+                    await logger.agent_suspended(
+                        agent_id, f"Waiting for: {', '.join(pending_names)}"
+                    )
                 except Exception:
                     pass
 
@@ -422,14 +421,13 @@ class Agent:
         # Restore LLM history
         self.llm.set_history(state.llm_history)
 
-        # Log agent resumed (for root agent only)
+        # Log agent resumed (console only for root agent)
         try:
             from agent.async_logger import get_logger
 
             logger = get_logger()
-            if logger.agent_levels.get(agent_id, 0) == 0:
-                trigger_agent = message.payload.get("agent_name", "unknown")
-                await logger.agent_resumed(agent_id, f"Triggered by: {trigger_agent}")
+            trigger_agent = message.payload.get("agent_name", "unknown")
+            await logger.agent_resumed(agent_id, f"Triggered by: {trigger_agent}")
         except Exception:
             pass
 
@@ -604,16 +602,15 @@ class Agent:
                 orchestrator = AgentOrchestrator()
                 await orchestrator.save_agent_state(agent_id, state)
 
-                # Log agent suspended (for root agent only)
+                # Log agent suspended (console only for root agent)
                 try:
                     from agent.async_logger import get_logger
 
                     logger = get_logger()
-                    if logger.agent_levels.get(agent_id, 0) == 0:
-                        pending_names = list(pending_subagents.keys())
-                        await logger.agent_suspended(
-                            agent_id, f"Waiting for: {', '.join(pending_names)}"
-                        )
+                    pending_names = list(pending_subagents.keys())
+                    await logger.agent_suspended(
+                        agent_id, f"Waiting for: {', '.join(pending_names)}"
+                    )
                 except Exception:
                     pass
 
@@ -784,15 +781,13 @@ class Agent:
         for callback in self.callbacks:
             callback.on_tool_call(iteration, tool_name, action.arguments or {})
 
-        # Log tool call (for root agent only)
+        # Log tool call (for all agents, but console only for root)
         if agent_id:
             try:
                 from agent.async_logger import get_logger
 
                 logger = get_logger()
-                # Check if this is a root agent (level 0)
-                if logger.agent_levels.get(agent_id, 0) == 0:
-                    await logger.tool_call(agent_id, tool_name, action.arguments or {})
+                await logger.tool_call(agent_id, tool_name, action.arguments or {})
             except Exception:
                 pass
 
@@ -809,14 +804,15 @@ class Agent:
             for callback in self.callbacks:
                 callback.on_tool_result(iteration, tool_name, result_str, True)
 
-            # Log tool result (for root agent only)
+            # Log tool result (for all agents, but console only for root)
             if agent_id:
                 try:
                     from agent.async_logger import get_logger
 
                     logger = get_logger()
-                    if logger.agent_levels.get(agent_id, 0) == 0:
-                        await logger.tool_result(agent_id, tool_name, result_str, True)
+                    await logger.tool_result(agent_id, tool_name, result_str, True)
+                except Exception:
+                    pass
                 except Exception:
                     pass
 
@@ -828,14 +824,13 @@ class Agent:
             for callback in self.callbacks:
                 callback.on_tool_result(iteration, tool_name, result, False)
 
-            # Log tool error (for root agent only)
+            # Log tool error (for all agents, but console only for root)
             if agent_id:
                 try:
                     from agent.async_logger import get_logger
 
                     logger = get_logger()
-                    if logger.agent_levels.get(agent_id, 0) == 0:
-                        await logger.tool_result(agent_id, tool_name, result, False)
+                    await logger.tool_result(agent_id, tool_name, result, False)
                 except Exception:
                     pass
 
