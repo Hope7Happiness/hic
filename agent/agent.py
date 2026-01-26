@@ -675,27 +675,52 @@ class Agent:
 
         # Build status summary
         status_lines = ["\n当前状态："]
+        pending_count = 0
+        completed_count = 0
+        failed_count = 0
+
         for subagent in state.launched_subagents:
             if subagent.status == "completed":
                 status_lines.append(
                     f"- {subagent.name}: ✅ 已完成，结果：{subagent.result}"
                 )
+                completed_count += 1
             elif subagent.status == "failed":
                 status_lines.append(
                     f"- {subagent.name}: ❌ 失败，错误：{subagent.error}"
                 )
+                failed_count += 1
             elif subagent.status == "running":
                 status_lines.append(f"- {subagent.name}: 🔄 运行中")
+                pending_count += 1
 
         status_text = "\n".join(status_lines)
 
-        # Build options
-        options_text = """
+        # Check if all subagents are done (no pending)
+        all_done = pending_count == 0
+
+        # Build options based on whether all subagents are done
+        if all_done:
+            options_text = f"""
+所有子 Agent 都已完成！
+- 已完成: {completed_count}
+- 失败: {failed_count}
+
+你现在应该：
+1. 整合所有已完成的子 Agent 的结果
+2. 使用 Action: finish 完成任务并返回最终结果
+
+重要：不要再启动新的子 Agent 或继续等待，所有子任务都已完成！
+"""
+        else:
+            options_text = f"""
+还有 {pending_count} 个子 Agent 正在运行中。
+
 你可以：
 1. 使用已完成的结果调用 Tool
 2. 启动新的子 Agent
-3. 继续等待其他子 Agent
-4. 完成任务
+3. 继续等待其他子 Agent (使用 wait_for_subagents)
+4. 如果不需要等待其他结果，可以直接完成任务
 """
 
         return result_text + status_text + options_text
