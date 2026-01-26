@@ -297,14 +297,15 @@ class Agent:
                 # Execute tool
                 observation = await self._execute_tool(action, iteration, agent_id)
 
-                # Notify callbacks: LLM request
+                # Notify callbacks and send tool result with clear marker
+                tool_result_msg = (
+                    f"[TOOL RESULT from {action.tool_name}]\n{observation}"
+                )
                 for callback in self.callbacks:
-                    callback.on_llm_request(
-                        iteration, f"Observation: {observation}", None
-                    )
+                    callback.on_llm_request(iteration, tool_result_msg, None)
 
                 llm_output = await loop.run_in_executor(
-                    None, self.llm.chat, f"Observation: {observation}"
+                    None, lambda: self.llm.chat(tool_result_msg)
                 )
 
                 # Notify callbacks: LLM response
@@ -550,14 +551,15 @@ class Agent:
                 # Execute tool
                 observation = await self._execute_tool(action, iteration, agent_id)
 
-                # Notify callbacks: LLM request
+                # Notify callbacks and send tool result with clear marker
+                tool_result_msg = (
+                    f"[TOOL RESULT from {action.tool_name}]\n{observation}"
+                )
                 for callback in self.callbacks:
-                    callback.on_llm_request(
-                        iteration, f"Observation: {observation}", None
-                    )
+                    callback.on_llm_request(iteration, tool_result_msg, None)
 
                 llm_output = await loop.run_in_executor(
-                    None, self.llm.chat, f"Observation: {observation}"
+                    None, lambda: self.llm.chat(tool_result_msg)
                 )
 
                 # Notify callbacks: LLM response

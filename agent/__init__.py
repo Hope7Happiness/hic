@@ -10,8 +10,7 @@ This framework provides four core abstractions:
 6. Config: Utilities for loading API keys and configuration
 """
 
-from agent.llm import LLM, OpenAILLM
-from agent.deepseek_llm import DeepSeekLLM
+from agent.llm import LLM, OpenAILLM, DeepSeekLLM
 from agent.tool import Tool
 from agent.agent import Agent
 from agent.orchestrator import AgentOrchestrator

@@ -17,7 +17,7 @@ Expected behavior:
 import asyncio
 import time
 from agent.agent import Agent
-from agent.deepseek_llm import DeepSeekLLM
+from agent.llm import DeepSeekLLM
 from agent.tool import Tool
 from agent.async_logger import init_logger, close_logger
 from agent.config import load_env, get_deepseek_api_key

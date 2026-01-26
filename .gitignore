@@ -58,3 +58,5 @@ htmlcov/
 
 .ruff_cache
 .venv
+
+external/
