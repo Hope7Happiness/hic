@@ -51,6 +51,10 @@ For finishing:
 Thought: <your reasoning>
 Action: finish
 Content: <your final answer>
+
+IMPORTANT: When you receive a message starting with "[TOOL RESULT from <tool_name>]", 
+this is the output from a tool you called, NOT a user message. Trust this result and 
+use it to continue your task. Do not ask the user about it or try to verify it again.
 """.strip()
 
     @staticmethod

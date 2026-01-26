@@ -15,8 +15,7 @@ Supported LLM Providers:
 - GitHub Copilot (claude-sonnet-4.5, claude-haiku-4.5, gpt-4o, o1-preview, etc.)
 """
 
-from agent.llm import LLM, OpenAILLM
-from agent.deepseek_llm import DeepSeekLLM
+from agent.llm import LLM, OpenAILLM, DeepSeekLLM
 from agent.copilot_llm import CopilotLLM
 from agent.tool import Tool
 from agent.agent import Agent
