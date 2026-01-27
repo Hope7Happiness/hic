@@ -148,17 +148,41 @@ class Agent:
         else:
             self.system_prompt = system_prompt
 
-    def _debug_llm_call(self):
-        """Print a lightweight marker before each LLM call.
+    def _debug_llm_call(
+        self,
+        agent_id: Optional[str] = None,
+        prompt_preview: Optional[str] = None,
+        prompt_type: str = "LLM",
+    ):
+        """Print/log a marker before each LLM call with prompt preview."""
+        if os.environ.get("DEBUG_LLM_CALLS", "0") == "0":
+            return
 
-        Enabled by default; set DEBUG_LLM_CALLS=0 to disable.
-        """
-        if os.environ.get("DEBUG_LLM_CALLS", "1") != "0":
-            print(
-                f"[{self.name}] [LLM] 🧠 调用LLM，如果卡住了代表LLM被rate limit",
-                file=sys.stderr,
-                flush=True,
-            )
+        preview = (prompt_preview or "").replace("\n", " ").strip()
+        if len(preview) > 120:
+            preview = preview[:117] + "..."
+        if preview:
+            message = f"🧠 调用LLM({prompt_type})，如果卡住了代表LLM被rate limit | Prompt: {preview}"
+        else:
+            message = "🧠 调用LLM，如果卡住了代表LLM被rate limit"
+
+        try:
+            from agent.async_logger import get_logger, LogLevel
+
+            logger = get_logger()
+            if logger:
+                loop = asyncio.get_running_loop()
+                target_id = agent_id or self.name
+                loop.create_task(logger.log(LogLevel.INFO, target_id, message, "LLM"))
+                return
+        except Exception:
+            pass
+
+        print(
+            f"[{self.name}] [LLM] {message}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def _build_default_system_prompt(self) -> str:
         """Build a concise default system prompt."""
@@ -289,7 +313,9 @@ class Agent:
         # Wrap in try-except to handle LLM errors (e.g., 429 rate limit)
         try:
             loop = asyncio.get_event_loop()
-            self._debug_llm_call()
+            self._debug_llm_call(
+                agent_id, "<system prompt hidden>" + task, "initial_task"
+            )
             llm_output = await loop.run_in_executor(
                 None, self.llm.chat, task, self.system_prompt
             )
@@ -334,7 +360,7 @@ class Agent:
                 callback.on_iteration_start(iteration, self.name)
 
             # Try to parse LLM output (with retries)
-            action = await self._parse_with_retry(llm_output, iteration)
+            action = await self._parse_with_retry(llm_output, iteration, 3, agent_id)
 
             if action is None:
                 # Failed to parse after retries
@@ -436,7 +462,7 @@ class Agent:
                 for callback in self.callbacks:
                     callback.on_llm_request(iteration, tool_result_msg, None)
 
-                self._debug_llm_call()
+                self._debug_llm_call(agent_id, tool_result_msg, "tool_result")
                 llm_output = await loop.run_in_executor(
                     None, lambda: self.llm.chat(tool_result_msg)
                 )
@@ -459,7 +485,7 @@ class Agent:
                 for callback in self.callbacks:
                     callback.on_llm_request(iteration, result, None)
 
-                self._debug_llm_call()
+                self._debug_llm_call(agent_id, result, "launch_subagents")
                 llm_output = await loop.run_in_executor(None, self.llm.chat, result)
 
                 # Notify callbacks: LLM response
@@ -476,7 +502,7 @@ class Agent:
                         iteration, f"Observation: {observation}", None
                     )
 
-                self._debug_llm_call()
+                self._debug_llm_call(agent_id, observation, "peer_message")
                 llm_output = await loop.run_in_executor(
                     None, self.llm.chat, f"Observation: {observation}"
                 )
@@ -538,6 +564,7 @@ class Agent:
         for callback in self.callbacks:
             callback.on_llm_request(iteration, summary_prompt, None)
 
+        self._debug_llm_call(agent_id, summary_prompt, "summary")
         llm_output = await loop.run_in_executor(None, self.llm.chat, summary_prompt)
 
         # Notify callbacks: LLM response
@@ -648,7 +675,7 @@ class Agent:
 
         # Get LLM response
         loop = asyncio.get_event_loop()
-        self._debug_llm_call()
+        self._debug_llm_call(agent_id, resume_prompt, "resume")
         llm_output = await loop.run_in_executor(None, self.llm.chat, resume_prompt)
 
         # Notify callbacks: LLM response
@@ -664,7 +691,7 @@ class Agent:
                 callback.on_iteration_start(iteration, self.name)
 
             # Parse LLM output
-            action = await self._parse_with_retry(llm_output, iteration)
+            action = await self._parse_with_retry(llm_output, iteration, 3, agent_id)
 
             if action is None:
                 # Failed to parse
@@ -720,7 +747,7 @@ class Agent:
 
             elif action.type == "tool":
                 observation = await self._execute_tool(action, iteration, agent_id)
-                
+
                 # Notify callbacks and send tool result with clear marker
                 tool_result_msg = (
                     f"[TOOL RESULT from {action.tool_name}]\n{observation}"
@@ -728,8 +755,8 @@ class Agent:
                 for callback in self.callbacks:
                     callback.on_llm_request(iteration, tool_result_msg, None)
 
-                self._debug_llm_call()
-                
+                self._debug_llm_call(agent_id, tool_result_msg, "tool_result")
+
                 llm_output = await loop.run_in_executor(
                     None, lambda: self.llm.chat(tool_result_msg)
                 )
@@ -743,7 +770,7 @@ class Agent:
                 for callback in self.callbacks:
                     callback.on_llm_request(iteration, result, None)
 
-                self._debug_llm_call()
+                self._debug_llm_call(agent_id, result, "launch_subagents")
                 llm_output = await loop.run_in_executor(None, self.llm.chat, result)
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
@@ -755,7 +782,7 @@ class Agent:
                         iteration, f"Observation: {observation}", None
                     )
 
-                self._debug_llm_call()
+                self._debug_llm_call(agent_id, observation, "peer_message")
                 llm_output = await loop.run_in_executor(
                     None, self.llm.chat, f"Observation: {observation}"
                 )
@@ -814,7 +841,7 @@ class Agent:
         for callback in self.callbacks:
             callback.on_llm_request(iteration, summary_prompt, None)
 
-        self._debug_llm_call()
+        self._debug_llm_call(agent_id, summary_prompt, "summary")
         llm_output = await loop.run_in_executor(None, self.llm.chat, summary_prompt)
         for callback in self.callbacks:
             callback.on_llm_response(iteration, llm_output)
@@ -825,83 +852,12 @@ class Agent:
 
         return response
 
-    def _build_resume_prompt(self, state: AgentState, message: AgentMessage) -> str:
-        """
-        Build a prompt to resume the agent after suspension.
-
-        Args:
-            state: Current agent state
-            message: Message that triggered resumption
-
-        Returns:
-            Resume prompt string
-        """
-        # Extract message details
-        agent_name = message.payload["agent_name"]
-
-        if message.type == "subagent_completed":
-            result = message.payload["result"]
-            result_text = f"现在，agent '{agent_name}' 刚完成，结果为：{result}"
-        elif message.type == "subagent_failed":
-            error = message.payload["error"]
-            result_text = f"现在，agent '{agent_name}' 执行失败，错误为：{error}"
-        else:
-            result_text = f"收到来自 agent '{agent_name}' 的消息"
-
-        # Build status summary
-        status_lines = ["\n当前状态："]
-        pending_count = 0
-        completed_count = 0
-        failed_count = 0
-
-        for subagent in state.launched_subagents:
-            if subagent.status == "completed":
-                status_lines.append(
-                    f"- {subagent.name}: ✅ 已完成，结果：{subagent.result}"
-                )
-                completed_count += 1
-            elif subagent.status == "failed":
-                status_lines.append(
-                    f"- {subagent.name}: ❌ 失败，错误：{subagent.error}"
-                )
-                failed_count += 1
-            elif subagent.status == "running":
-                status_lines.append(f"- {subagent.name}: 🔄 运行中")
-                pending_count += 1
-
-        status_text = "\n".join(status_lines)
-
-        # Check if all subagents are done (no pending)
-        all_done = pending_count == 0
-
-        # Build options based on whether all subagents are done
-        if all_done:
-            options_text = f"""
-所有子 Agent 都已完成！
-- 已完成: {completed_count}
-- 失败: {failed_count}
-
-你现在应该：
-1. 整合所有已完成的子 Agent 的结果
-2. 使用 Action: finish 完成任务并返回最终结果
-
-重要：不要再启动新的子 Agent 或继续等待，所有子任务都已完成！
-"""
-        else:
-            options_text = f"""
-还有 {pending_count} 个子 Agent 正在运行中。
-
-你可以：
-1. 使用已完成的结果调用 Tool
-2. 启动新的子 Agent
-3. 继续等待其他子 Agent (使用 wait_for_subagents)
-4. 如果不需要等待其他结果，可以直接完成任务
-"""
-
-        return result_text + status_text + options_text
-
     async def _parse_with_retry(
-        self, llm_output: str, iteration: int, max_retries: int = 3
+        self,
+        llm_output: str,
+        iteration: int,
+        max_retries: int = 3,
+        agent_id: Optional[str] = None,
     ) -> Optional[Action]:
         """
         Try to parse LLM output with retries on failure.
@@ -933,7 +889,7 @@ class Agent:
                     for callback in self.callbacks:
                         callback.on_llm_request(iteration, error_msg, None)
 
-                    self._debug_llm_call()
+                    self._debug_llm_call(agent_id, error_msg, "parse_retry")
                     llm_output = await loop.run_in_executor(
                         None, self.llm.chat, error_msg
                     )
@@ -1048,6 +1004,9 @@ class Agent:
         recipient = action.recipient
         message_content = action.message
 
+        if message_content is None:
+            return "❌ Message content is required for send_message"
+
         # Validate recipient
         if recipient not in self.allowed_peers:
             return f"❌ Cannot send message to '{recipient}'. Allowed peers: {self.allowed_peers}"
@@ -1084,16 +1043,18 @@ class Agent:
             from agent.async_logger import get_logger
 
             logger = get_logger()
+            message_preview = message_content[:50]
             await logger.tool_result(
                 agent_id,
                 "send_message",
-                f"Message sent to {recipient}: {message_content[:50]}...",
+                f"Message sent to {recipient}: {message_preview}...",
                 True,
             )
         except Exception:
             pass
 
-        return f"✅ Message sent to {recipient}: {message_content[:50]}..."
+        message_preview = message_content[:50]
+        return f"✅ Message sent to {recipient}: {message_preview}..."
 
     async def _launch_subagents(
         self,

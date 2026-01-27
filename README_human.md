@@ -150,6 +150,8 @@ See detailed documentation: [`examples/README_async.md`](examples/README_async.m
 
 ## Run Tests
 
+> ℹ️ **LLM 调试提示默认关闭**：如果程序运行的时候突然卡住，可以排查 LLM 调用是否被 rate limit：在运行命令前设置 `DEBUG_LLM_CALLS=1`，日志会展示每次 `llm.chat()` 的 prompt 前缀和来源；默认值为 0，不输出这些提示。
+
 ```bash
 # Run all tests (including async tests)
 pytest tests/ -v

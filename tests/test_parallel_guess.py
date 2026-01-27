@@ -26,8 +26,8 @@ from agent.llm import LLM
 from agent.async_logger import init_logger, close_logger
 from agent.tool import Tool
 from agent.tool import Tool
-from agent.deepseek_llm import DeepSeekLLM
-from agent.copilot_llm import CopilotLLM
+from agent.llm import DeepSeekLLM
+from agent.llm import CopilotLLM
 from agent.config import get_deepseek_api_key
 
 
