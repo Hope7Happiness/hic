@@ -113,6 +113,26 @@ class Agent:
             tool.context = self.context  # Inject context into tool
             self.tools[tool.name] = tool
 
+        # If no tools provided, register default builtin tools (bash, read, write, edit)
+        if not self.tools:
+            try:
+                from agent.tools import bash, restricted_bash, read, write, edit
+                from agent.tool import Tool
+
+                default_tools = [
+                    Tool(bash, context=self.context),
+                    Tool(restricted_bash, context=self.context),
+                    Tool(read, context=self.context),
+                    Tool(write, context=self.context),
+                    Tool(edit, context=self.context),
+                ]
+
+                for tool in default_tools:
+                    self.tools[tool.name] = tool
+            except Exception:
+                # If imports fail, keep existing tools
+                pass
+
         self.subagents = subagents or {}
 
         # Build system prompt

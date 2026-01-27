@@ -42,7 +42,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Setup environment
 uv venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-uv pip install openai pydantic pyyaml python-dotenv pytest requests
+uv pip install openai pydantic pyyaml python-dotenv pytest requests Levenshtein
 
 # Configure API keys using .env (recommended)
 cp .env.example .env

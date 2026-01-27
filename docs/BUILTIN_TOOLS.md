@@ -2,27 +2,35 @@
 
 ## 概述
 
-本项目提供了两个基础工具（tools），以及一个带权限控制的安全版本：
+本项目现在提供了一组现代化的基础工具，均带有权限控制与安全策略：
 
 1. **bash** - 执行任意 shell 命令（无限制）
 2. **restricted_bash** - 执行受限的 shell 命令（白名单机制）
 3. **calculator** - 安全的数学计算器
+4. **read** - 安全读取文件，支持分页、行号、二进制检测
+5. **write** - 安全写入/创建文件，自动生成 diff、可创建父目录
+6. **edit** - 容错字符串替换，多策略匹配 + diff 输出
 
-## 文件结构
+## 文件结构（核心相关）
 
 ```
 agent/
-├── builtin_tools.py          # 工具实现
-│   ├── bash()                 # 无限制版本
-│   ├── restricted_bash()      # 受限版本（推荐）
-│   └── calculator()           # 计算器
+├── tools/
+│   ├── bash.py      # 增强版 bash/restricted_bash（权限 + 超时 + 截断）
+│   ├── read.py      # 新增 read 工具
+│   ├── write.py     # 新增 write 工具
+│   └── edit.py      # 新增 edit 工具（多策略匹配）
+├── agent.py         # 默认自动注册 bash/restricted_bash/read/write/edit 工具
+└── tool_result.py   # 结构化返回值（增加 error() 兼容别名）
 
 examples/
-└── system_analyst_with_restricted_bash.py  # 使用示例
+├── system_analyst_with_restricted_bash.py  # 旧示例
+└── agent_read_write_edit_demo.md           # 新示例：安全读写编辑流程
 
 tests/
-├── test_builtin_tools_standalone.py        # 基础工具测试（46个测试）
-└── test_restricted_bash_standalone.py      # 权限控制测试
+├── test_read_write_edit_tools.py           # read/write/edit 覆盖测试
+├── test_tool_infrastructure.py             # 基础设施测试
+└── ...
 ```
 
 ## 工具详解
@@ -141,6 +149,56 @@ restricted_bash(
 ---
 
 ### 3. calculator - 数学计算器
+
+### 4. read - 安全文件读取（新）
+
+```python
+from agent.tools import read
+from agent.tool import Tool
+
+read_tool = Tool(read)
+# 调用参数：file_path, offset=0, limit=2000, ctx 自动注入
+```
+
+特点：
+- 行号输出（cat -n 风格，5 位填充）
+- 支持 offset/limit 分页，末尾提示继续 offset
+- 二进制检测，拒绝读取二进制
+- 路径安全校验（不允许越界工作区）
+- 结构化 ToolResult 输出（file_path/lines_read/total_lines/is_truncated）
+
+### 5. write - 安全文件写入（新）
+
+```python
+from agent.tools import write
+from agent.tool import Tool
+
+write_tool = Tool(write)
+# 调用参数：file_path, content, create_dirs=True, ctx 自动注入
+```
+
+特点：
+- 权限请求，包含 size/line_count 元信息
+- 自动创建父目录（可关闭）
+- 生成统一 diff（a/ b/ 前缀）
+- 路径越界防护
+
+### 6. edit - 容错字符串替换（新，最重要）
+
+```python
+from agent.tools import edit
+from agent.tool import Tool
+
+edit_tool = Tool(edit)
+# 调用参数：file_path, old_string, new_string, replace_all=False, ctx 自动注入
+```
+
+特点：
+- 多策略匹配（精确、去空白、归一化、上下文匹配等）
+- Levenshtein 相似度阈值保护（默认 0.80）
+- replace_all 支持
+- 生成 diff 输出，附带 strategy 元数据
+- 路径、权限安全校验
 
 ```python
 from agent.builtin_tools import calculator

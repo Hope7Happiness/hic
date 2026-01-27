@@ -250,6 +250,11 @@ class ToolResult:
         """
         return cls(title=title, output="", error_message=error_msg, metadata=metadata)
 
+    # Backward-compatible alias
+    @classmethod
+    def error(cls, title: str, error_msg: str, **metadata) -> "ToolResult":
+        return cls.from_error(title, error_msg, **metadata)
+
 
 # Type alias for tool functions
 from typing import Callable, Awaitable
