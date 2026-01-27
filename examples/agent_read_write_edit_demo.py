@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 from agent import Agent, Tool
-from agent.llm import DeepSeekLLM  # assume DummyLLM exists for offline demo
+from agent.llm import DeepSeekLLM
 from agent.tools import read, write, edit
 from agent.config import load_env, get_deepseek_api_key
 

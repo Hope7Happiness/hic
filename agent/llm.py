@@ -9,12 +9,14 @@ This module provides:
 
 import os
 import copy
+import time
 from abc import ABC, abstractmethod
 from typing import List, Dict, Optional
 from openai import OpenAI
 import requests
 from pathlib import Path
 import json
+
 
 class LLM(ABC):
     """
@@ -160,16 +162,22 @@ class DeepSeekLLM(LLM):
         # Only store valid API parameters (not initialization parameters)
         self.config = kwargs
 
-    def chat(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    def chat(
+        self, prompt: str, system_prompt: Optional[str] = None, max_retries: int = 5
+    ) -> str:
         """
         Send a message and get a response from DeepSeek.
 
         Args:
             prompt: User message to send
             system_prompt: Optional system prompt (only used if history is empty)
+            max_retries: Maximum number of retries for rate limit errors (default: 5)
 
         Returns:
             The assistant's response text
+
+        Raises:
+            RuntimeError: If the request fails after all retries
         """
         # Add system prompt if this is the first message
         if not self.history and system_prompt:
@@ -178,18 +186,54 @@ class DeepSeekLLM(LLM):
         # Add user message to history
         self.history.append({"role": "user", "content": prompt})
 
-        # Call DeepSeek API
-        response = self.client.chat.completions.create(
-            model=self.model, messages=self.history, stream=False, **self.config
+        # Call DeepSeek API with retry logic
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model, messages=self.history, stream=False, **self.config
+                )
+
+                # Extract response text
+                assistant_message = response.choices[0].message.content
+
+                # Add assistant response to history
+                self.history.append({"role": "assistant", "content": assistant_message})
+
+                return assistant_message
+
+            except Exception as e:
+                last_error = e
+
+                # Check if this is a rate limit error
+                error_str = str(e).lower()
+                if (
+                    "429" in error_str
+                    or "rate limit" in error_str
+                    or "too many requests" in error_str
+                ):
+                    # Rate limit error - retry with exponential backoff
+                    if attempt < max_retries - 1:
+                        wait_time = 2**attempt  # 1s, 2s, 4s, 8s, 16s
+                        print(
+                            f"⚠️  Rate limit hit. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        # Last attempt failed
+                        raise RuntimeError(
+                            f"DeepSeek API rate limit exceeded after {max_retries} retries: {e}"
+                        )
+                else:
+                    # Non-rate-limit error - fail immediately
+                    raise RuntimeError(f"DeepSeek API request failed: {e}")
+
+        # Should not reach here, but just in case
+        raise RuntimeError(
+            f"DeepSeek API request failed after {max_retries} retries: {last_error}"
         )
 
-        # Extract response text
-        assistant_message = response.choices[0].message.content
-
-        # Add assistant response to history
-        self.history.append({"role": "assistant", "content": assistant_message})
-
-        return assistant_message
 
 class CopilotLLM(LLM):
     """
@@ -265,16 +309,22 @@ class CopilotLLM(LLM):
                 f"Please re-authenticate: cd auth/copilot && python cli.py auth login"
             )
 
-    def chat(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+    def chat(
+        self, prompt: str, system_prompt: Optional[str] = None, max_retries: int = 5
+    ) -> str:
         """
         Send a message and get a response from GitHub Copilot.
 
         Args:
             prompt: User message to send
             system_prompt: Optional system prompt (only used if history is empty)
+            max_retries: Maximum number of retries for rate limit errors (default: 5)
 
         Returns:
             The assistant's response text
+
+        Raises:
+            RuntimeError: If the request fails after all retries
         """
         # Add system prompt if this is the first message
         if not self.history and system_prompt:
@@ -300,32 +350,68 @@ class CopilotLLM(LLM):
             **self.config,
         }
 
-        # Call Copilot API
-        try:
-            response = requests.post(
-                self.COPILOT_CHAT_ENDPOINT,
-                headers=headers,
-                json=payload,
-                timeout=60,
-            )
-            response.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(
-                f"GitHub Copilot API request failed: {e}\n"
-                f"Status: {response.status_code if hasattr(response, 'status_code') else 'N/A'}\n"
-                f"Response: {response.text if hasattr(response, 'text') else 'N/A'}"
-            )
+        # Call Copilot API with retry logic
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    self.COPILOT_CHAT_ENDPOINT,
+                    headers=headers,
+                    json=payload,
+                    timeout=60,
+                )
+                response.raise_for_status()
 
-        # Extract response
-        try:
-            data = response.json()
-            assistant_message = data["choices"][0]["message"]["content"]
-        except (json.JSONDecodeError, KeyError, IndexError) as e:
-            raise RuntimeError(
-                f"Failed to parse Copilot API response: {e}\nResponse: {response.text}"
-            )
+                # Success - extract and return response
+                try:
+                    data = response.json()
+                    assistant_message = data["choices"][0]["message"]["content"]
+                except (json.JSONDecodeError, KeyError, IndexError) as e:
+                    raise RuntimeError(
+                        f"Failed to parse Copilot API response: {e}\nResponse: {response.text}"
+                    )
 
-        # Add assistant response to history
-        self.history.append({"role": "assistant", "content": assistant_message})
+                # Add assistant response to history
+                self.history.append({"role": "assistant", "content": assistant_message})
+                return assistant_message
 
-        return assistant_message
+            except requests.exceptions.RequestException as e:
+                last_error = e
+
+                # Check if this is a rate limit error (429)
+                if hasattr(e, "response") and e.response is not None:
+                    status_code = e.response.status_code
+
+                    if status_code == 429:
+                        # Rate limit error - retry with exponential backoff
+                        if attempt < max_retries - 1:
+                            wait_time = 2**attempt  # 1s, 2s, 4s, 8s, 16s
+                            print(
+                                f"⚠️  Rate limit (429) hit. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})"
+                            )
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            # Last attempt failed
+                            raise RuntimeError(
+                                f"GitHub Copilot API rate limit exceeded after {max_retries} retries.\n"
+                                f"Status: 429\n"
+                                f"Response: {e.response.text if hasattr(e.response, 'text') else 'N/A'}"
+                            )
+                    else:
+                        # Non-rate-limit error - fail immediately
+                        raise RuntimeError(
+                            f"GitHub Copilot API request failed: {e}\n"
+                            f"Status: {status_code}\n"
+                            f"Response: {e.response.text if hasattr(e.response, 'text') else 'N/A'}"
+                        )
+                else:
+                    # No response object - fail immediately
+                    raise RuntimeError(
+                        f"GitHub Copilot API request failed: {e}\nNo response received"
+                    )
+
+        # Should not reach here, but just in case
+        raise RuntimeError(
+            f"GitHub Copilot API request failed after {max_retries} retries: {last_error}"
+        )

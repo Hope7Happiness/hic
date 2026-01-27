@@ -201,19 +201,14 @@ def create_agent_a(llm) -> Agent:
 5. 再次使用 wait 等待AgentB确认他也得到了完整哈希码
 6. 收到AgentB的确认后，再使用 finish 向父Agent汇报最终结果
 
-通信流程：
-- Action: send_message, Recipient: AgentB, Message: "我有前半部分{HASH_PART_A}，请告诉我你的后半部分"
-- Action: wait（等待AgentB回复）
-- 收到回复后，parse出后半部分，使用 manage_hash 保存
-- Action: send_message, Recipient: AgentB, Message: "完整哈希码是{FULL_HASH}"（务必给出完整哈希码，让AgentB可以保存）
-- Action: wait（等待AgentB的确认消息）
-- Action: finish, Content: 包含完整哈希码
-
-重要：
-- 你可以与 AgentB 通信
+重要规则：
+- 你只知道前半部分{HASH_PART_A}，不知道后半部分和完整哈希码
+- 你必须通过与AgentB通信才能获得后半部分
 - 必须使用 wait 等待AgentB的回复与确认
+- 收到后半部分后，使用 manage_hash 工具拼接完整哈希码
 - 你必须把完整哈希码告诉AgentB，且在收到AgentB确认后才能 finish
-- 最后的 finish Content 必须包含完整哈希码 {FULL_HASH}
+
+每次只执行一个Action，然后等待结果！不要提前规划多个步骤。
 """
 
     return Agent(
@@ -241,25 +236,20 @@ def create_agent_b(llm) -> Agent:
 
 你的任务：
 1. 先使用 wait 等待AgentA的消息
-2. 当AgentA询问你后半部分时，回复他：我有后半部分{HASH_PART_B}，你有前半部分吗？
+2. 当AgentA询问你后半部分时，回复他你的后半部分{HASH_PART_B}
 3. 再次使用 wait，直到AgentA明确告诉你前半部分或完整哈希码
 4. 收到信息后，使用 manage_hash(action="add", part="...") 保存前半部分，并使用 manage_hash(action="get") 获取完整哈希码
-5. 为了确保双方都拥有完整哈希码，必须再向AgentA发送一条确认消息，包含完整哈希码（例如："我现在也有完整哈希码{FULL_HASH}"）
+5. 为了确保双方都拥有完整哈希码，必须再向AgentA发送一条确认消息，包含完整哈希码
 6. 发送确认消息后，使用 finish 向父Agent汇报最终结果
 
-通信流程：
-- Action: wait（等待AgentA的消息）
-- 收到消息后，Action: send_message, Recipient: AgentA, Message: "我有后半部分{HASH_PART_B}，你有前半部分吗？"
-- Action: wait（等待AgentA再次回复）
-- 收到前半部分或完整哈希码后，使用 manage_hash 保存，并使用 manage_hash(action="get") 确认完整哈希码
-- Action: send_message, Recipient: AgentA, Message: "我现在也有完整哈希码{FULL_HASH}"（必须发送完整哈希码给对方）
-- Action: finish, Content: 包含完整哈希码
-
-重要：
-- 你可以与 AgentA 通信
+重要规则：
+- 你只知道后半部分{HASH_PART_B}，不知道前半部分和完整哈希码
+- 你必须通过与AgentA通信才能获得前半部分
 - 必须先 wait 等待AgentA主动联系你
+- 收到前半部分后，使用 manage_hash 工具拼接完整哈希码
 - 你必须把完整哈希码告诉AgentA，并确认双方都拥有完整哈希码后才能 finish
-- 最后的 finish Content 必须包含完整哈希码 {FULL_HASH}
+
+每次只执行一个Action，然后等待结果！不要提前规划多个步骤。
 """
 
     return Agent(
@@ -311,7 +301,9 @@ def create_parent_agent(llm, agent_a, agent_b) -> Agent:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("llm_type", ["deepseek", "copilot"])  # Default to real LLM flow
+@pytest.mark.parametrize(
+    "llm_type", ["deepseek", "copilot"]
+)  # Default to real LLM flow
 async def test_agent_communication(llm_type):
     """
     Test that two agents can communicate to assemble a complete hash.
