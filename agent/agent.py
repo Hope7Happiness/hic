@@ -209,7 +209,8 @@ class Agent:
             from agent.async_logger import get_logger
 
             logger = get_logger()
-            await logger.agent_start(agent_id, task)
+            tool_names = list(self.tools.keys())
+            await logger.agent_start(agent_id, task, self.system_prompt, tool_names)
         except Exception:
             pass  # Logger not initialized
 
@@ -230,11 +231,50 @@ class Agent:
         for callback in self.callbacks:
             callback.on_llm_request(iteration, task, self.system_prompt)
 
+        # Log the first LLM request
+        try:
+            from agent.async_logger import get_logger
+
+            logger = get_logger()
+            await logger.llm_first_request(agent_id, task)
+        except Exception:
+            pass
+
         # Send initial task with system prompt (sync call wrapped in executor)
-        loop = asyncio.get_event_loop()
-        llm_output = await loop.run_in_executor(
-            None, self.llm.chat, task, self.system_prompt
-        )
+        # Wrap in try-except to handle LLM errors (e.g., 429 rate limit)
+        try:
+            loop = asyncio.get_event_loop()
+            llm_output = await loop.run_in_executor(
+                None, self.llm.chat, task, self.system_prompt
+            )
+        except Exception as e:
+            # Log the error
+            try:
+                from agent.async_logger import get_logger, LogLevel
+
+                logger = get_logger()
+                await logger.log(
+                    LogLevel.ERROR,
+                    agent_id,
+                    f"❌ LLM call failed: {str(e)[:200]}",
+                    "AGENT",
+                )
+            except Exception:
+                pass
+
+            # Return error response - orchestrator will handle notifying parent
+            error_msg = f"LLM call failed: {str(e)}"
+            response = AgentResponse(
+                content=error_msg,
+                iterations=iteration,
+                success=False,
+            )
+            # Notify callbacks: agent finish
+            for callback in self.callbacks:
+                callback.on_agent_finish(False, iteration, error_msg)
+
+            # Re-raise so orchestrator can catch and send subagent_failed message
+            raise Exception(error_msg) from e
 
         # Notify callbacks: LLM response
         for callback in self.callbacks:
@@ -485,9 +525,38 @@ class Agent:
         for callback in self.callbacks:
             callback.on_llm_request(iteration, resume_prompt, None)
 
-        # Send resume prompt
-        loop = asyncio.get_event_loop()
-        llm_output = await loop.run_in_executor(None, self.llm.chat, resume_prompt)
+        # Send resume prompt (with error handling for rate limits, etc.)
+        try:
+            loop = asyncio.get_event_loop()
+            llm_output = await loop.run_in_executor(None, self.llm.chat, resume_prompt)
+        except Exception as e:
+            # Log the error
+            try:
+                from agent.async_logger import get_logger, LogLevel
+
+                logger = get_logger()
+                await logger.log(
+                    LogLevel.ERROR,
+                    agent_id,
+                    f"❌ LLM call failed during resume: {str(e)[:200]}",
+                    "AGENT",
+                )
+            except Exception:
+                pass
+
+            # Return error response
+            error_msg = f"LLM call failed during resume: {str(e)}"
+            response = AgentResponse(
+                content=error_msg,
+                iterations=iteration,
+                success=False,
+            )
+            # Notify callbacks: agent finish
+            for callback in self.callbacks:
+                callback.on_agent_finish(False, iteration, error_msg)
+
+            # Raise exception so orchestrator knows the agent failed
+            raise Exception(error_msg) from e
 
         # Notify callbacks: LLM response
         for callback in self.callbacks:

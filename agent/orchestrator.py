@@ -161,7 +161,8 @@ class AgentOrchestrator:
                 await self.send_message(message)
 
             self.agent_status[agent_id] = AgentStatus.FAILED
-            raise
+            # Don't re-raise - we've already notified the parent via message
+            # Re-raising would cause "Task exception was never retrieved" warnings
 
     async def send_message(self, message: AgentMessage):
         """Send a message to the queue"""
@@ -226,9 +227,53 @@ class AgentOrchestrator:
         # Mark as running
         self.agent_status[agent_id] = AgentStatus.RUNNING
 
-        # Resume execution
-        task = asyncio.create_task(agent._internal_resume(state, message))
+        # Resume execution (wrapped to handle exceptions)
+        task = asyncio.create_task(
+            self._resume_agent_with_error_handling(agent_id, agent, state, message)
+        )
         self.running_tasks[agent_id] = task
+
+    async def _resume_agent_with_error_handling(
+        self, agent_id: str, agent: "Agent", state: AgentState, message: AgentMessage
+    ):
+        """Resume an agent with proper error handling"""
+        try:
+            result = await agent._internal_resume(state, message)
+            # Agent will call mark_agent_completed itself on finish
+            # We just return the result here
+            return result
+
+        except Exception as e:
+            # Log the error
+            try:
+                from agent.async_logger import get_logger, LogLevel
+
+                logger = get_logger()
+                await logger.log(
+                    LogLevel.ERROR,
+                    agent_id,
+                    f"❌ Agent failed during resume: {str(e)[:200]}",
+                    "AGENT",
+                )
+            except Exception:
+                pass
+
+            # Create error response
+            from agent.schemas import AgentResponse
+
+            error_response = AgentResponse(
+                content=f"Agent failed: {str(e)}",
+                iterations=state.iteration,
+                success=False,
+            )
+
+            # Mark as failed and signal completion with error result
+            self.agent_status[agent_id] = AgentStatus.FAILED
+            self.agent_results[agent_id] = error_response
+            if agent_id in self.completion_events:
+                self.completion_events[agent_id].set()
+
+            # Don't re-raise to avoid "Task exception was never retrieved"
 
     async def save_agent_state(self, agent_id: str, state: AgentState):
         """Save agent state and mark as suspended"""

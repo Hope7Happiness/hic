@@ -199,7 +199,7 @@ print(calc_tool.call(expression="sqrt(144)"))
 
 ```python
 from agent.agent import Agent
-from agent.deepseek_llm import DeepSeekLLM
+from agent.llm import DeepSeekLLM
 from agent.tool import Tool
 from agent.builtin_tools import restricted_bash, calculator
 
