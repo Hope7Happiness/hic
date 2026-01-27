@@ -1,8 +1,51 @@
-# For humans, go to [README_human.md](README_human.md)
+# Human Is Cheap (HIC)
 
-# LLM Agent Framework
+> Human is cheap, time is valuable.
 
-A type-safe, hierarchical LLM agent framework built with Python, Pydantic, and extensible LLM support.
+## Table of Contents
+
+- [Features](#features)
+- [Architecture](#architecture)
+- [Installation](#installation)
+- [Configuration](#configuration)
+  - [API Keys with .env](#api-keys-with-env)
+  - [GitHub Copilot Authentication](#github-copilot-authentication)
+- [Quick Start](#quick-start)
+  - [1. Create Tools](#1-create-tools)
+  - [2. Set Up LLM and Agent](#2-set-up-llm-and-agent)
+  - [3. Run the Agent](#3-run-the-agent)
+  - [Verbose Mode](#verbose-mode)
+- [Using Different LLM Models](#using-different-llm-models)
+  - [OpenAI Models](#openai-models)
+  - [DeepSeek Models](#deepseek-models)
+  - [GitHub Copilot Models](#github-copilot-models)
+  - [Custom LLM Implementation](#custom-llm-implementation)
+- [Using Skills (YAML Configuration)](#using-skills-yaml-configuration)
+- [Hierarchical Agents](#hierarchical-agents)
+- [Agent Observability with Callbacks](#agent-observability-with-callbacks)
+  - [AsyncLogger (Recommended)](#asynclogger-recommended-for-modern-applications)
+  - [Quick Verbose Mode](#quick-verbose-mode-using-callbacks)
+  - [Built-in Callbacks](#built-in-callbacks)
+  - [Custom Callbacks](#custom-callbacks)
+- [LLM Output Format](#llm-output-format)
+- [Running Tests](#running-tests)
+- [Project Structure](#project-structure)
+- [Examples](#examples)
+- [Key Concepts](#key-concepts)
+  - [Tool Creation](#tool-creation)
+  - [Tool Infrastructure](#tool-infrastructure)
+    - [ToolResult - Structured Return Format](#toolresult---structured-return-format)
+    - [Context - Execution Environment](#context---execution-environment)
+    - [Permission System](#permission-system)
+    - [Output Truncation](#output-truncation)
+  - [Built-in Tools](#built-in-tools)
+  - [Error Handling](#error-handling)
+  - [Subagent Communication](#subagent-communication)
+- [Example: File Analysis Agent](#example-file-analysis-agent)
+- [Advanced Usage](#advanced-usage)
+- [License](#license)
+- [Contributing](#contributing)
+- [Troubleshooting](#troubleshooting)
 
 ## Features
 
@@ -12,32 +55,54 @@ A type-safe, hierarchical LLM agent framework built with Python, Pydantic, and e
   - **GitHub Copilot** (claude-sonnet-4.5, claude-haiku-4.5, gpt-4o, o1-preview, and more)
   - Easy to add custom providers
 - **Type-Safe Tool System**: Create tools from Python functions with automatic type validation
+  - **Structured Tool Results**: ToolResult with title, output, metadata, attachments, and timestamps
+  - **Context Injection**: Automatic execution context (session, permissions, abort signals)
+  - **Permission System**: Request/approve flow with pattern-based auto-approval
+  - **Output Truncation**: Automatic truncation of large outputs (2000 lines / 50KB)
+- **Built-in Tools**:
+  - **Enhanced Bash Tool**: Async shell execution with permissions, timeouts, and structured results
+  - **Calculator**: Safe mathematical expression evaluation
 - **Hierarchical Agents**: Agents can delegate tasks to specialized subagents
 - **Async Execution**: Full async support with parallel subagent execution
-- **Real-Time Logging**: Hierarchical logging with incremental result reporting
+  - **Agent Orchestrator**: Message-based coordination and state management
+  - **Real-Time Reporting**: Incremental result streaming during long operations
+- **Modern Logging System**: AsyncLogger with color-coded output and per-agent file logging
 - **YAML Configuration**: Define complex agent structures using YAML files
 - **Automatic Parsing**: LLM outputs are parsed and validated using Pydantic schemas
 - **Error Handling**: Built-in retry logic for parsing errors and tool failures
 - **Observability**: Callback system for monitoring, logging, and metrics collection
+- **Security Features**: 
+  - Dangerous command detection
+  - Path safety validation
+  - Command whitelisting for restricted mode
+  - Abort signals for cancellation
 
 ## Architecture
 
-The framework has five core abstractions:
+The framework has eight core abstractions:
 
 1. **LLM**: Abstract base class for LLM implementations (with OpenAILLM as default)
 2. **Tool**: Python functions with type annotations that agents can use
-3. **Skill**: YAML-configured combinations of tools for complex tasks
-4. **Agent**: The core element that uses tools and delegates to subagents
-5. **Callbacks**: Event hooks for observability, monitoring, and custom integrations
+3. **ToolResult**: Structured return format with output, metadata, and attachments
+4. **Context**: Execution context with permissions, abort signals, and session management
+5. **Skill**: YAML-configured combinations of tools for complex tasks
+6. **Agent**: The core element that uses tools and delegates to subagents
+7. **AgentOrchestrator**: Message-based coordinator for async agent execution and state management
+8. **AsyncLogger**: Modern async-safe logging with color-coded output and per-agent files
+9. **Callbacks**: Event hooks for observability, monitoring, and custom integrations
 
 ## Installation
 
 ```bash
 # Install dependencies
-pip install openai pydantic pyyaml python-dotenv
+pip install openai pydantic pyyaml python-dotenv requests
 
 # For development
 pip install pytest pytest-asyncio
+
+# Or install from pyproject.toml
+pip install -e .
+pip install -e ".[dev]"  # with dev dependencies
 ```
 
 ## Configuration
@@ -86,21 +151,65 @@ See the [GitHub Copilot section](#github-copilot-models) for detailed setup inst
 
 ### 1. Create Tools
 
+Tools can return simple strings or structured ToolResult objects:
+
 ```python
 from agent import Tool
+from agent.tool_result import ToolResult
 
+# Simple tool returning a string
 def calculator(expression: str) -> float:
     """Evaluate a mathematical expression."""
     return eval(expression)
 
-def file_writer(path: str, content: str) -> str:
+# Advanced tool returning ToolResult with metadata
+def file_writer(path: str, content: str) -> ToolResult:
     """Write content to a file."""
     with open(path, 'w') as f:
         f.write(content)
-    return f"Wrote to {path}"
+    return ToolResult.success(
+        title=f"File written: {path}",
+        output=f"Successfully wrote {len(content)} bytes to {path}",
+        metadata={"path": path, "size": len(content)}
+    )
 
 calc_tool = Tool(calculator)
 file_tool = Tool(file_writer)
+```
+
+**Using Built-in Tools:**
+
+```python
+from agent.tools.bash import bash
+from agent.builtin_tools import calculator
+
+# Modern bash tool with permissions and structured results
+bash_tool = Tool(bash)
+
+# Calculator tool (safe mathematical evaluation)
+calc_tool = Tool(calculator)
+```
+
+**Context Injection:**
+
+Tools can receive execution context automatically by adding a `ctx` parameter:
+
+```python
+from agent.context import Context
+from agent.tool_result import ToolResult
+
+def interactive_tool(question: str, ctx: Context) -> ToolResult:
+    """Ask user for approval before executing."""
+    # Request permission from user
+    approved = ctx.ask("bash", patterns=["ls *"], description=f"Execute: ls")
+    
+    if approved:
+        return ToolResult.success(output="Approved and executed")
+    else:
+        return ToolResult.from_error("User denied permission")
+
+# Context is automatically injected by Agent
+tool = Tool(interactive_tool)
 ```
 
 ### 2. Set Up LLM and Agent
@@ -379,54 +488,102 @@ agent = Skill.from_yaml("parent_agent.yaml", tools, llm)
 response = agent.run("Calculate 100/5 and save it to result.txt")
 ```
 
-### Example: Zoo Director with Role-Playing Agents
+### Example: Multi-Layer Research System
 
-See `examples/zoo_director.py` for a complete example of hierarchical agents with personality:
+See `examples/multi_layer_research_system.py` for a complete example of a 3-layer agent hierarchy:
 
 ```python
-from agent import Agent, DeepSeekLLM, Tool, get_deepseek_api_key
+from agent import Agent, DeepSeekLLM, Tool
 
-# Create specialized sub-agents with unique personalities
-cat_agent = Agent(
+# Layer 3: Specialized workers (DataCollector, PaperFinder, etc.)
+data_collector = Agent(llm=llm, tools=tools, name="DataCollector")
+paper_finder = Agent(llm=llm, tools=tools, name="PaperFinder")
+
+# Layer 2: Coordinators (DataAnalyst, LiteratureResearcher)
+data_analyst = Agent(
     llm=llm,
     tools=tools,
-    name="猫猫",
-    system_prompt="You must always start responses with '喵呜！' ..."
+    subagents={"DataCollector": data_collector, "DataProcessor": data_processor},
+    name="DataAnalyst"
 )
 
-dog_agent = Agent(
+literature_researcher = Agent(
     llm=llm,
     tools=tools,
-    name="狗狗",
-    system_prompt="You must always start responses with '汪汪！' ..."
+    subagents={"PaperFinder": paper_finder, "SummaryGenerator": summary_gen},
+    name="LiteratureResearcher"
 )
 
-# Create director agent that delegates to sub-agents
+# Layer 1: Director
 director = Agent(
     llm=llm,
     tools=tools,
-    subagents={"猫猫": cat_agent, "狗狗": dog_agent},
-    name="动物园园长",
-    system_prompt="You must delegate all questions to either 猫猫 or 狗狗..."
+    subagents={
+        "DataAnalyst": data_analyst,
+        "LiteratureResearcher": literature_researcher
+    },
+    name="ResearchDirector"
 )
 
-# Run with custom colored callback for different agents
-response = director.run("请告诉我关于猫的信息")
+# Run with automatic AsyncLogger
+response = await director._run_async("研究任务：分析数据并查找相关文献")
 ```
 
 This example demonstrates:
-- **Agent Delegation**: Director agent chooses the right sub-agent for each task
-- **Role-Playing**: Each agent has a unique personality and response style
-- **Colored Output**: Different agents display in different colors (purple/yellow/blue)
-- **Nested Execution**: Full visibility into parent and child agent interactions
+- **3-layer hierarchy**: Director → Coordinators → Workers
+- **Async parallel execution**: Multiple subagents run concurrently
+- **Real-time reporting**: Results reported as they complete
+- **Recursive delegation**: Each layer can delegate to the next
+- **Full observability**: AsyncLogger tracks all agent interactions
 
 ## Agent Observability with Callbacks
 
-The framework provides a powerful callback system for monitoring and logging agent execution.
+The framework provides multiple ways to monitor and log agent execution.
 
-### Quick Verbose Mode (Recommended)
+### AsyncLogger (Recommended for Modern Applications)
 
-The easiest way to see detailed execution logs is to use the built-in `verbose` parameter:
+The modern `AsyncLogger` provides async-safe logging with color-coded output and per-agent file logging:
+
+```python
+from agent import Agent, DeepSeekLLM, init_logger, close_logger, get_deepseek_api_key
+
+# Initialize global logger
+init_logger(log_dir="logs", console_enabled=True)
+
+# Set up agent
+llm = DeepSeekLLM(api_key=get_deepseek_api_key(), model="deepseek-chat")
+agent = Agent(llm=llm, tools=tools, name="MyAgent")
+
+# Run agent - logging happens automatically
+response = await agent._run_async("Your task here")
+
+# Clean up
+await close_logger()
+```
+
+**AsyncLogger Features:**
+- **Color-coded console output** with automatic agent color assignment
+- **Per-agent log files** with timestamps (e.g., `logs/MyAgent_20250126_143201.log`)
+- **Async file writing** (non-blocking queue for performance)
+- **Hierarchical indentation** for subagents
+- **Elapsed time tracking** for operations
+- **Log levels**: DEBUG, INFO, WARNING, ERROR
+
+**Logging Methods:**
+```python
+from agent.async_logger import get_logger
+
+logger = get_logger()
+await logger.log("Custom message", level="INFO", agent_name="MyAgent")
+await logger.agent_start("MyAgent", "Task description")
+await logger.agent_thought("MyAgent", "Thinking...")
+await logger.tool_call("MyAgent", "bash", {"command": "ls"})
+await logger.agent_finish("MyAgent", success=True, elapsed=1.5)
+```
+
+### Quick Verbose Mode (Using Callbacks)
+
+For simple use cases, the `verbose` parameter enables detailed console logging:
 
 ```python
 from agent import Agent, DeepSeekLLM, get_deepseek_api_key
@@ -439,21 +596,19 @@ agent = Agent(llm=llm, tools=tools)
 response = agent.run("Your task here", verbose=True)
 ```
 
-This automatically adds a `ColorfulConsoleCallback` that provides:
-- **Color-coded output** for different agents (perfect for hierarchical agent systems)
+This automatically adds a `ColorfulConsoleCallback` (⚠️ DEPRECATED, use AsyncLogger instead) that provides:
+- **Color-coded output** for different agents
 - **Automatic indentation** based on agent nesting level
 - Agent start/finish events with timestamps
 - Each iteration's thought process
 - Tool calls with arguments and results
-- Subagent delegation tracking
-- Performance metrics
 
-**For hierarchical agents**, each agent in the execution stack gets its own color, making it easy to follow which agent is doing what. You can customize colors:
+**For hierarchical agents**, each agent in the execution stack gets its own color:
 
 ```python
 from agent import ColorfulConsoleCallback
 
-# Custom color mapping for your agents
+# Custom color mapping for your agents (DEPRECATED - use AsyncLogger)
 color_map = {
     "MainAgent": "\033[35m",    # Purple
     "Helper": "\033[33m",       # Yellow
@@ -536,7 +691,7 @@ agent = Agent(llm=llm, tools=tools, callbacks=[CustomCallback()])
 - `on_iteration_end` - Iteration completes
 - `on_agent_finish` - Agent completes execution
 
-See `examples/agent_with_callbacks.py` for comprehensive examples.
+See `examples/async_parallel_agents.py` and `examples/multi_layer_research_system.py` for comprehensive examples of callbacks and AsyncLogger usage.
 
 ## LLM Output Format
 
@@ -568,6 +723,13 @@ pytest tests/test_tool.py
 
 # Run with verbose output
 pytest -v
+
+# Run specific test categories
+pytest tests/test_tool_infrastructure.py -v  # Tool infrastructure tests
+pytest tests/test_bash_tool.py -v           # Enhanced bash tool tests
+pytest tests/test_builtin_tools.py -v       # Built-in tools tests
+pytest tests/test_agent_tool_integration.py -v  # Integration tests
+pytest tests/test_restricted_bash.py -v     # Command restriction tests
 
 # Test Copilot authentication (requires Copilot setup)
 pytest tests/test_copilot_auth.py -v
@@ -639,13 +801,22 @@ hic/
 │   ├── deepseek_llm.py     # DeepSeek implementation
 │   ├── copilot_llm.py      # GitHub Copilot implementation
 │   ├── tool.py             # Tool system
+│   ├── tool_result.py      # ToolResult with metadata and attachments
+│   ├── context.py          # Execution context with permissions
+│   ├── permissions.py      # Permission system and security
+│   ├── truncation.py       # Output truncation for large results
+│   ├── builtin_tools.py    # Built-in tools (calculator, deprecated bash)
+│   ├── tools/
+│   │   ├── __init__.py
+│   │   └── bash.py         # Modern async bash tool
 │   ├── agent.py            # Agent logic
+│   ├── orchestrator.py     # Async orchestration
 │   ├── skill.py            # YAML loading
 │   ├── schemas.py          # Pydantic models
 │   ├── parser.py           # Output parser
 │   ├── callbacks.py        # Callback system
-│   ├── orchestrator.py     # Async orchestration
-│   └── async_logger.py     # Async logging
+│   ├── async_logger.py     # Modern async logging
+│   └── config.py           # Configuration and API keys
 ├── auth/
 │   └── copilot/            # GitHub Copilot authentication
 │       ├── auth.py         # OAuth device flow
@@ -658,22 +829,25 @@ hic/
 │   ├── test_llm.py                 # LLM implementations tests
 │   ├── test_llm_abstract.py        # Abstract LLM base class tests
 │   ├── test_tool.py                # Tool creation & validation tests
+│   ├── test_tool_infrastructure.py # Context, permissions, truncation tests
+│   ├── test_bash_tool.py           # Enhanced bash tool tests
+│   ├── test_restricted_bash.py     # Command restriction tests
+│   ├── test_builtin_tools.py       # Built-in tools tests
+│   ├── test_agent_tool_integration.py # Integration tests
 │   ├── test_skill.py               # YAML skill loading tests
 │   ├── test_async_basic.py         # Async parallel execution tests
 │   ├── test_realtime_reporting.py  # Real-time reporting behavior tests
 │   ├── test_copilot_auth.py        # Copilot authentication tests
+│   ├── test_role.py                # Message role support tests
 │   └── test_utils.py               # Utility functions tests
 ├── examples/
-│   ├── simple_agent.py
-│   ├── custom_llm.py
-│   ├── deepseek_agent.py
 │   ├── copilot_example.py              # Copilot usage example
-│   ├── skill_with_deepseek.py
-│   ├── complex_agent_verbose.py
-│   ├── agent_with_callbacks.py
-│   ├── async_parallel_agents.py        # Async agent example
+│   ├── builtin_tool_call.py            # Built-in tools example
+│   ├── tool_infrastructure_example.py  # Advanced tool features
+│   ├── new_enhanced_bash_tool.py       # Enhanced bash tool example
+│   ├── async_parallel_agents.py        # Async parallel execution
 │   ├── async_parallel_agents_real.py   # Real-time reporting
-│   └── complex_integrated_test_cn.py
+│   └── multi_layer_research_system.py  # 3-layer hierarchy (Chinese)
 ├── pyproject.toml
 └── README.md
 ```
@@ -683,30 +857,26 @@ hic/
 The framework includes several examples demonstrating different features:
 
 ### Basic Examples
-- **`simple_agent.py`** - Basic agent with tools
-- **`custom_llm.py`** - Implementing custom LLM providers
-- **`deepseek_agent.py`** - Using DeepSeek LLM
 - **`copilot_example.py`** - Using GitHub Copilot LLM (requires authentication)
-- **`skill_with_deepseek.py`** - YAML skill configuration
+- **`builtin_tool_call.py`** - Using built-in tools (bash, calculator)
+- **`tool_infrastructure_example.py`** - Advanced tool features (Context, ToolResult, permissions)
+- **`new_enhanced_bash_tool.py`** - Enhanced bash tool with permissions and structured results
 
 ### Advanced Examples
-- **`complex_agent_verbose.py`** - Detailed logging example (English)
-- **`agent_with_callbacks.py`** - Callback system demonstration
-- **`async_parallel_agents.py`** - Async parallel agent execution
-- **`async_parallel_agents_real.py`** - Real-time reporting with incremental results
-- **`complex_integrated_test_cn.py`** - Complex integrated test with Chinese output
-  - Real-world data analysis workflow
-  - Multiple tools (Python execution, file I/O, data query)
-  - Multi-step reasoning and execution
-  - Detailed Chinese output showing all intermediate results
-  - Custom Chinese callback for verbose logging
-  - See [detailed documentation](examples/COMPLEX_INTEGRATED_TEST_CN_README.md)
+- **`async_parallel_agents.py`** - Async parallel agent execution with configurable LLM
+- **`async_parallel_agents_real.py`** - Real LLM with timing verification
+- **`multi_layer_research_system.py`** - 3-layer agent hierarchy (Chinese)
+  - L1 (Top): ResearchDirector - 研究总监
+  - L2 (Middle): DataAnalyst, LiteratureResearcher - 数据分析师、文献研究员
+  - L3 (Bottom): DataCollector, DataProcessor, PaperFinder, SummaryGenerator - 数据采集/处理员、论文查找/摘要员
+  - Demonstrates recursive agent calls and parallel execution
+  - Full async orchestration with real-time reporting
 
 Run any example:
 ```bash
-python examples/simple_agent.py
 python examples/copilot_example.py  # Requires GitHub Copilot authentication
-python examples/complex_integrated_test_cn.py
+python examples/tool_infrastructure_example.py
+python examples/multi_layer_research_system.py
 ```
 
 ## Key Concepts
@@ -728,6 +898,199 @@ The framework automatically:
 - Validates arguments using Pydantic
 - Generates schema descriptions for the LLM
 
+### Tool Infrastructure
+
+The framework provides a comprehensive tool infrastructure for building robust, secure tools:
+
+#### ToolResult - Structured Return Format
+
+Tools can return rich, structured results instead of plain strings:
+
+```python
+from agent.tool_result import ToolResult, Attachment
+
+def advanced_tool(query: str) -> ToolResult:
+    """Tool with structured output."""
+    return ToolResult.success(
+        title="Query Results",
+        output="Found 3 matches:\n1. Result A\n2. Result B\n3. Result C",
+        metadata={
+            "count": 3,
+            "query": query,
+            "timestamp": "2025-01-26T14:32:01"
+        },
+        attachments=[
+            Attachment.from_file("report.pdf", attachment_type="file")
+        ]
+    )
+```
+
+**ToolResult features:**
+- `title`: Short summary
+- `output`: Detailed text output
+- `metadata`: Structured data (dict)
+- `attachments`: Files, images, or data
+- `error_message`: Error information
+- `timestamp`: ISO format timestamp
+- `is_success` / `is_error`: Status properties
+
+#### Context - Execution Environment
+
+Tools can receive execution context for permissions, abort signals, and session management:
+
+```python
+from agent.context import Context
+from agent.tool_result import ToolResult
+
+def interactive_tool(command: str, ctx: Context) -> ToolResult:
+    """Tool that requests permission before execution."""
+    # Check if aborted
+    if ctx.is_aborted:
+        return ToolResult.from_error("Operation aborted by user")
+    
+    # Request permission
+    approved = ctx.ask(
+        permission_type="bash",
+        patterns=[command],
+        description=f"Execute command: {command}"
+    )
+    
+    if not approved:
+        return ToolResult.from_error("Permission denied")
+    
+    # Execute command...
+    return ToolResult.success(output="Command executed")
+```
+
+**Context features:**
+- `session_id`, `message_id`, `call_id`: Unique identifiers
+- `agent_name`: Current agent name
+- `ask()`: Request permission from user
+- `abort()`, `check_abort()`, `is_aborted`: Abort signals
+- `get_metadata()`, `set_metadata()`, `update_metadata()`: Session storage
+- `workdir`: Current working directory
+
+#### Permission System
+
+Fine-grained control over tool execution:
+
+```python
+from agent.permissions import (
+    AutoApproveHandler,
+    InteractiveHandler,
+    PermissionType
+)
+from agent.context import create_context
+
+# Auto-approve specific patterns
+auto_approve = AutoApproveHandler({
+    PermissionType.BASH: ["ls *", "cat *.txt"],
+    PermissionType.READ: ["*.md", "docs/*"]
+})
+
+# Create context with permission handler
+ctx = create_context(
+    permission_handler=auto_approve,
+    session_id="session_123"
+)
+```
+
+**Permission types:**
+- `BASH`: Shell command execution
+- `READ`: File reading
+- `WRITE`: File writing
+- `DELETE`: File deletion
+- `NETWORK`: Network requests
+- `WEBFETCH`: Web content fetching
+- `QUESTION`: User questions
+- `EXECUTE`: Code execution
+
+**Permission handlers:**
+- `AutoApproveHandler`: Pattern-based auto-approval (glob wildcards)
+- `InteractiveHandler`: CLI prompts for approval
+- `AlwaysAllowHandler`: Approve everything (testing only)
+- `AlwaysDenyHandler`: Deny everything (read-only mode)
+
+**Security features:**
+- `is_path_safe()`: Prevent directory escape attacks
+- `is_command_dangerous()`: Detect dangerous shell commands
+- Dangerous command patterns: `rm -rf`, `dd`, `chmod 777`, `curl|bash`, etc.
+
+#### Output Truncation
+
+Automatic truncation of large outputs to prevent token overflow:
+
+```python
+from agent.truncation import OutputTruncator
+
+truncator = OutputTruncator(max_lines=2000, max_bytes=51200)  # 50KB
+result, metadata = truncator.truncate(large_output)
+
+if metadata.is_truncated:
+    print(f"Output truncated at line {metadata.truncated_at_line}")
+    print(f"Full output saved to: {metadata.full_output_file}")
+```
+
+**Features:**
+- Default limits: 2000 lines or 50KB
+- Saves full output to temp file
+- Returns truncation metadata
+- Automatic cleanup of old files
+
+### Built-in Tools
+
+#### Enhanced Bash Tool (Recommended)
+
+```python
+from agent.tools.bash import bash
+from agent.tool import Tool
+
+bash_tool = Tool(bash)
+agent = Agent(llm=llm, tools=[bash_tool])
+```
+
+**Features:**
+- Async execution with timeouts (default 120s)
+- Permission system integration
+- Automatic output truncation
+- Dangerous command detection
+- Working directory validation
+- Structured ToolResult with exit codes and duration
+- Abort signal handling
+
+#### Calculator Tool
+
+```python
+from agent.builtin_tools import calculator
+from agent.tool import Tool
+
+calc_tool = Tool(calculator)
+```
+
+**Safe mathematical evaluation:**
+- Basic arithmetic: `+`, `-`, `*`, `/`, `//`, `%`, `**`
+- Functions: `abs`, `round`, `min`, `max`, `sum`
+- Math functions: `sqrt`, `sin`, `cos`, `tan`, `log`, `log10`, `exp`, `pi`, `e`
+- No arbitrary code execution
+
+#### Deprecated Tools
+
+⚠️ **WARNING**: The following tools in `agent.builtin_tools` are DEPRECATED:
+- `bash()` - Use `agent.tools.bash.bash()` instead
+- `restricted_bash()` - Use `agent.tools.bash.bash()` with `allowed_commands` instead
+
+**Migration:**
+```python
+# OLD (deprecated)
+from agent.builtin_tools import bash, restricted_bash
+
+# NEW (recommended)
+from agent.tools.bash import bash
+from agent.tool import Tool
+
+bash_tool = Tool(bash)  # Context auto-injected by Agent
+```
+
 ### Error Handling
 
 The framework includes robust error handling:
@@ -735,6 +1098,8 @@ The framework includes robust error handling:
 - **Parse errors**: Retries up to 3 times with feedback to LLM
 - **Tool errors**: Returns error message to LLM for recovery
 - **Max iterations**: Forces a summary when limit is reached
+- **Permission denied**: ToolResult with error message
+- **Abort signals**: Graceful cancellation of operations
 
 ### Subagent Communication
 
