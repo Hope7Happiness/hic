@@ -281,8 +281,8 @@ def create_parent_agent(llm, agent_a, agent_b) -> Agent:
     system_prompt = """你是一个协调Agent，负责管理两个子Agent：AgentA和AgentB。
 
 背景信息：
-- AgentA知道一个哈希码的前半部分
-- AgentB知道后半部分
+- AgentA提前已经知道了一个哈希码的前半部分
+- AgentB提前已经知道了后半部分
 - 你的任务是让两个子Agent合作，拼接出完整的哈希码并汇报给你
 
 你的策略：
@@ -311,7 +311,7 @@ def create_parent_agent(llm, agent_a, agent_b) -> Agent:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("llm_type", ["deepseek"])  # Default to real LLM flow
+@pytest.mark.parametrize("llm_type", ["deepseek", "copilot"])  # Default to real LLM flow
 async def test_agent_communication(llm_type):
     """
     Test that two agents can communicate to assemble a complete hash.
