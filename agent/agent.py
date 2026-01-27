@@ -11,6 +11,8 @@ This module provides the Agent class that:
 
 import asyncio
 import time
+import os
+import sys
 from typing import Dict, List, Optional, Any
 from agent.llm import LLM
 from agent.tool import Tool
@@ -146,6 +148,18 @@ class Agent:
         else:
             self.system_prompt = system_prompt
 
+    def _debug_llm_call(self):
+        """Print a lightweight marker before each LLM call.
+
+        Enabled by default; set DEBUG_LLM_CALLS=0 to disable.
+        """
+        if os.environ.get("DEBUG_LLM_CALLS", "1") != "0":
+            print(
+                f"[{self.name}] [LLM] 🧠 调用LLM，如果卡住了代表LLM被rate limit",
+                file=sys.stderr,
+                flush=True,
+            )
+
     def _build_default_system_prompt(self) -> str:
         """Build a concise default system prompt."""
         prompt_parts = ["You are a helpful assistant. Think step by step."]
@@ -275,6 +289,7 @@ class Agent:
         # Wrap in try-except to handle LLM errors (e.g., 429 rate limit)
         try:
             loop = asyncio.get_event_loop()
+            self._debug_llm_call()
             llm_output = await loop.run_in_executor(
                 None, self.llm.chat, task, self.system_prompt
             )
@@ -421,6 +436,7 @@ class Agent:
                 for callback in self.callbacks:
                     callback.on_llm_request(iteration, tool_result_msg, None)
 
+                self._debug_llm_call()
                 llm_output = await loop.run_in_executor(
                     None, lambda: self.llm.chat(tool_result_msg)
                 )
@@ -443,6 +459,7 @@ class Agent:
                 for callback in self.callbacks:
                     callback.on_llm_request(iteration, result, None)
 
+                self._debug_llm_call()
                 llm_output = await loop.run_in_executor(None, self.llm.chat, result)
 
                 # Notify callbacks: LLM response
@@ -459,6 +476,7 @@ class Agent:
                         iteration, f"Observation: {observation}", None
                     )
 
+                self._debug_llm_call()
                 llm_output = await loop.run_in_executor(
                     None, self.llm.chat, f"Observation: {observation}"
                 )
@@ -630,6 +648,7 @@ class Agent:
 
         # Get LLM response
         loop = asyncio.get_event_loop()
+        self._debug_llm_call()
         llm_output = await loop.run_in_executor(None, self.llm.chat, resume_prompt)
 
         # Notify callbacks: LLM response
@@ -701,7 +720,7 @@ class Agent:
 
             elif action.type == "tool":
                 observation = await self._execute_tool(action, iteration, agent_id)
-
+                
                 # Notify callbacks and send tool result with clear marker
                 tool_result_msg = (
                     f"[TOOL RESULT from {action.tool_name}]\n{observation}"
@@ -709,6 +728,8 @@ class Agent:
                 for callback in self.callbacks:
                     callback.on_llm_request(iteration, tool_result_msg, None)
 
+                self._debug_llm_call()
+                
                 llm_output = await loop.run_in_executor(
                     None, lambda: self.llm.chat(tool_result_msg)
                 )
@@ -721,6 +742,8 @@ class Agent:
                 )
                 for callback in self.callbacks:
                     callback.on_llm_request(iteration, result, None)
+
+                self._debug_llm_call()
                 llm_output = await loop.run_in_executor(None, self.llm.chat, result)
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
@@ -731,6 +754,8 @@ class Agent:
                     callback.on_llm_request(
                         iteration, f"Observation: {observation}", None
                     )
+
+                self._debug_llm_call()
                 llm_output = await loop.run_in_executor(
                     None, self.llm.chat, f"Observation: {observation}"
                 )
@@ -788,6 +813,8 @@ class Agent:
         summary_prompt = "You have reached the maximum number of iterations. Please provide a final summary."
         for callback in self.callbacks:
             callback.on_llm_request(iteration, summary_prompt, None)
+
+        self._debug_llm_call()
         llm_output = await loop.run_in_executor(None, self.llm.chat, summary_prompt)
         for callback in self.callbacks:
             callback.on_llm_response(iteration, llm_output)
@@ -906,6 +933,7 @@ class Agent:
                     for callback in self.callbacks:
                         callback.on_llm_request(iteration, error_msg, None)
 
+                    self._debug_llm_call()
                     llm_output = await loop.run_in_executor(
                         None, self.llm.chat, error_msg
                     )

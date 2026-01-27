@@ -813,6 +813,20 @@ USE_SCRIPTED_LLM=1 pytest tests/test_communicate.py -s -k deepseek -v
 
 This test ensures the orchestrator delivers peer messages correctly whether the recipient is waiting or busy, and that both agents report the final hash to the parent.
 
+### Parallel Guessing Challenge (NEW)
+
+`tests/test_parallel_guess.py` spins up six subagents (three questioners + three answerers) plus a parent orchestrator. The pairs run concurrently: each questioner can only ask "比X大还是小?" questions, the matching answerer replies truthfully, and the parent must report the ranking based on who finishes first. The test also inspects the generated log files to confirm the reported ranking matches the actual completion timestamps.
+
+```bash
+ # Default: real DeepSeek LLMs (requires DEEPSEEK_API_KEY)
+ pytest tests/test_parallel_guess.py -s -k deepseek -v
+
+ # Optional: deterministic scripted LLMs (no external API)
+ USE_SCRIPTED_LLM=1 pytest tests/test_parallel_guess.py -v
+```
+
+This scenario stresses peer messaging, multiple simultaneous waits, and log-driven validation of asynchronous ordering.
+
 ## Project Structure
 
 ```

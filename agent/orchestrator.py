@@ -344,7 +344,10 @@ class AgentOrchestrator:
 
     def find_agent_by_name(self, agent_name: str, requester_id: str) -> Optional[str]:
         """
-        Find agent ID by name (sibling agent with same parent).
+        Find agent ID by name.
+
+        - If requester is a child agent: resolve only among siblings (same parent)
+        - If requester is a parent agent: resolve only among its direct children
 
         Args:
             agent_name: Name of the agent to find
@@ -355,8 +358,14 @@ class AgentOrchestrator:
         """
         # Get requester's parent
         requester_parent = self.child_parent.get(requester_id)
+
+        # If requester has no parent, treat it as a parent agent
         if not requester_parent:
-            return None  # Requester has no parent
+            for child_id in self.parent_child.get(requester_id, []):
+                child_agent = self.agents.get(child_id)
+                if child_agent and child_agent.name == agent_name:
+                    return child_id
+            return None
 
         # Find all agents with the target name
         candidate_ids = self.agent_name_to_id.get(agent_name, [])
@@ -380,6 +389,7 @@ class AgentOrchestrator:
 
         sender_name = message.payload.get("sender_name", "unknown")
         message_content = message.payload.get("message", "")
+        sender_id = message.from_agent
         recipient_agent = self.agents.get(recipient_id)
         if recipient_agent:
             recipient_name = recipient_agent.name
@@ -394,7 +404,7 @@ class AgentOrchestrator:
             logger = get_logger()
             await logger.log(
                 LogLevel.INFO,
-                recipient_id,
+                sender_id,
                 f"📨 [{sender_name} -> {recipient_name}]发送信息，对方状态是{status_label}，信息内容：{message_content}",
                 "COMM",
             )
@@ -429,7 +439,7 @@ class AgentOrchestrator:
                 logger = get_logger()
                 await logger.log(
                     LogLevel.INFO,
-                    recipient_id,
+                    sender_id,
                     f"📥 [{sender_name} -> {recipient_name}]信息暂存在队列中，对方状态仍是{status_label}，内容：{message_content}",
                     "COMM",
                 )

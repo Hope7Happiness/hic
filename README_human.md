@@ -229,6 +229,26 @@ USE_SCRIPTED_LLM=1 pytest tests/test_communicate.py -s -k deepseek -v
 
 日志会出现 `[AgentA -> AgentB]发送信息，对方状态是wait，信息内容：...` 等语句，便于在 `logs/AgentA_*.log`、`logs/AgentB_*.log`、`logs/ParentAgent_*.log` 中追踪整个通信过程。
 
+### 并行猜数挑战 (NEW)
+
+`tests/test_parallel_guess.py` 会并行启动 6 个子 Agent（三个提问者 + 三个回答者）以及一个父 Agent：
+
+- 父 Agent 选择 3 个 1-10 的整数，并把它们分发给回答者
+- 每个提问者只能问 “真实数字比 X 大/小/等于？”
+- 回答者必须诚实回答（支持大/小/相等等三种情况）
+- 提问者猜对后立刻 finish，父 Agent 需要根据完成先后给出排名
+- 测试会解析 `logs/Questioner*_*.log` 的完成时间，确保父 Agent 报告的排名与真实完成顺序一致
+
+```bash
+# 默认使用真实 DeepSeek LLM（需要 DEEPSEEK_API_KEY）
+pytest tests/test_parallel_guess.py -s -k deepseek -v
+
+# 如需离线/无 API 模式，使用脚本化 LLM
+USE_SCRIPTED_LLM=1 pytest tests/test_parallel_guess.py -v
+```
+
+该测试覆盖了多对等 Agent 同时通信、排队消息在 wait/运行状态之间切换、以及从日志提取时间戳做断言的完整流程。
+
 ## Key Features Explained
 
 ### 1. Async Parallel Execution
