@@ -1,3 +1,5 @@
+# For humans, go to [README_human.md](README_human.md)
+
 # Human Is Cheap (HIC)
 
 > Human is cheap, time is valuable.
