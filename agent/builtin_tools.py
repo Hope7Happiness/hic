@@ -1,21 +1,53 @@
 """
 Built-in tools for the agent framework.
 
-This module provides commonly used tools that can be used with agents:
-- bash: Execute shell commands in the terminal (unrestricted)
-- restricted_bash: Execute only whitelisted shell commands (secure)
-- calculator: Perform mathematical calculations
+⚠️  DEPRECATION NOTICE ⚠️
+===============================================================================
+The bash/restricted_bash functions in this module are DEPRECATED and will be
+removed in a future version.
+
+Please migrate to the new enhanced bash tool:
+    from agent.tools.bash import bash, restricted_bash
+
+The new version provides:
+  ✓ Async support with proper timeout/abort handling
+  ✓ Structured ToolResult with metadata and attachments
+  ✓ Permission system with auto-approve patterns
+  ✓ Automatic output truncation (2000 lines / 50KB)
+  ✓ Working directory validation
+  ✓ Better error handling and diagnostics
+
+The calculator() function is NOT deprecated and will remain in this module.
+
+Migration example:
+    OLD: from agent.builtin_tools import restricted_bash
+    NEW: from agent.tools.bash import bash
+         from agent.tool import Tool
+
+         bash_tool = Tool(bash)  # Context auto-injected by Agent
+         agent = Agent(llm=llm, tools=[bash_tool])
+
+For detailed migration guide, see: docs/BASH_TOOL.md
+===============================================================================
+
+Legacy functions (for backward compatibility):
+- bash: Execute shell commands in the terminal (unrestricted) [DEPRECATED]
+- restricted_bash: Execute only whitelisted shell commands (secure) [DEPRECATED]
+- calculator: Perform mathematical calculations [ACTIVE]
 """
 
 import subprocess
 import re
 import shlex
+import warnings
 from typing import Optional, List, Set
 
 
 def bash(command: str, timeout: int = 30) -> str:
     """
     Execute a shell command in the terminal and return the output.
+
+    ⚠️  DEPRECATED: Use agent.tools.bash.bash() instead for better features.
 
     Args:
         command: The shell command to execute (e.g., "ls -la", "echo hello")
@@ -34,6 +66,13 @@ def bash(command: str, timeout: int = 30) -> str:
         This tool executes arbitrary shell commands. Use with caution.
         Avoid using with untrusted input.
     """
+    warnings.warn(
+        "agent.builtin_tools.bash() is deprecated. "
+        "Use agent.tools.bash.bash() for async support, permissions, and structured results.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     try:
         result = subprocess.run(
             command,
@@ -129,6 +168,8 @@ def restricted_bash(
     """
     Execute a shell command with security restrictions.
 
+    ⚠️  DEPRECATED: Use agent.tools.bash.bash() with allowed_commands parameter instead.
+
     Only whitelisted commands are allowed. By default, only safe read-only
     commands are permitted (ls, grep, cat, etc.).
 
@@ -155,6 +196,13 @@ def restricted_bash(
         - Redirects can be disabled to prevent file writes
         - Dangerous commands are blocked by default
     """
+    warnings.warn(
+        "agent.builtin_tools.restricted_bash() is deprecated. "
+        "Use agent.tools.bash.bash() with allowed_commands parameter for better features.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     if allowed_commands is None:
         allowed_commands = DEFAULT_SAFE_COMMANDS
 

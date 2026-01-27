@@ -1,8 +1,24 @@
 """
 Example: System Analysis Agent with Restricted Bash and Calculator
 
+⚠️  NOTE: This example uses the DEPRECATED bash tool from agent.builtin_tools
+===============================================================================
+For the NEW enhanced bash tool with better features, see:
+    examples/new_enhanced_bash_tool.py
+
+The new version provides:
+  ✓ Async execution with proper timeout/abort handling
+  ✓ Structured ToolResult with metadata
+  ✓ Automatic Context injection by Agent
+  ✓ Permission system with auto-approve patterns
+  ✓ Automatic output truncation (2000 lines / 50KB)
+  ✓ Better error handling and diagnostics
+
+This example is kept for backward compatibility demonstration.
+===============================================================================
+
 This example demonstrates:
-1. Using restricted_bash tool for safe command execution
+1. Using restricted_bash tool for safe command execution (DEPRECATED)
 2. Using calculator tool for data analysis
 3. An agent that analyzes system information and performs calculations
 

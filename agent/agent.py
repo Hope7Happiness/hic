@@ -6,6 +6,7 @@ This module provides the Agent class that:
 2. Executes multi-turn iterations with the LLM
 3. Parses LLM output and executes actions
 4. Supports async execution with parallel subagent launching
+5. Manages execution context for tools
 """
 
 import asyncio
@@ -49,6 +50,7 @@ class Agent:
         system_prompt: Optional[str] = None,
         name: Optional[str] = None,
         callbacks: Optional[List[AgentCallback]] = None,
+        working_directory: Optional[str] = None,
     ):
         """
         Initialize an agent.
@@ -61,13 +63,57 @@ class Agent:
             system_prompt: Custom system prompt (uses default if None)
             name: Name of this agent (for debugging/logging)
             callbacks: List of callbacks for observability/logging
+            working_directory: Working directory for tool execution (defaults to current dir)
         """
         self.llm = llm
-        self.tools = {tool.name: tool for tool in (tools or [])}
-        self.subagents = subagents or {}
         self.max_iterations = max_iterations
         self.name = name or "Agent"
         self.callbacks = callbacks or []
+
+        # Create context for tool execution
+        # Import here to avoid circular dependency and __init__.py issues
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        def load_context_module():
+            """Load context module directly to avoid import issues."""
+            agent_dir = Path(__file__).parent
+            context_path = agent_dir / "context.py"
+
+            if "agent.context" in sys.modules:
+                return sys.modules["agent.context"]
+
+            spec = importlib.util.spec_from_file_location("agent.context", context_path)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Cannot load context module from {context_path}")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["agent.context"] = module
+            spec.loader.exec_module(module)
+            return module
+
+        context_mod = load_context_module()
+        self.context = context_mod.create_auto_approve_context(
+            patterns={
+                "bash": ["*"],
+                "read": ["*"],
+                "write": ["*"],
+                "delete": ["*"],
+                "network": ["*"],
+                "webfetch": ["*"],
+                "question": ["*"],
+                "execute": ["*"],
+            },
+            working_directory=working_directory or ".",
+        )
+
+        # Register tools with context
+        self.tools = {}
+        for tool in tools or []:
+            tool.context = self.context  # Inject context into tool
+            self.tools[tool.name] = tool
+
+        self.subagents = subagents or {}
 
         # Build system prompt
         if system_prompt is None:
@@ -820,11 +866,10 @@ class Agent:
 
         tool = self.tools[tool_name]
 
-        # Execute tool in executor (tools are sync)
-        loop = asyncio.get_event_loop()
+        # Execute tool (async with context injection)
         try:
             arguments = action.arguments or {}
-            result = await loop.run_in_executor(None, lambda: tool.call(**arguments))
+            result = await tool.call_async(**arguments)
             result_str = str(result)
 
             # Notify callbacks: tool result (success)
@@ -838,8 +883,6 @@ class Agent:
 
                     logger = get_logger()
                     await logger.tool_result(agent_id, tool_name, result_str, True)
-                except Exception:
-                    pass
                 except Exception:
                     pass
 
