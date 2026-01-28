@@ -58,6 +58,28 @@ class LLM(ABC):
         """Set the conversation history."""
         self.history = copy.deepcopy(history)
 
+    def count_tokens(self, messages: Optional[List[Dict[str, str]]] = None) -> int:
+        """
+        Count tokens in messages using the token counter.
+
+        Args:
+            messages: Messages to count (defaults to current history)
+
+        Returns:
+            Token count
+
+        Note:
+            Uses SimpleTokenCounter by default. Subclasses can override
+            to use model-specific counting (e.g., tiktoken).
+        """
+        from agent.token_counter import SimpleTokenCounter
+
+        counter = SimpleTokenCounter()
+        messages_to_count = messages if messages is not None else self.history
+        model = getattr(self, "model", "gpt-4")
+
+        return counter.count_messages(messages_to_count, model)
+
 
 class OpenAILLM(LLM):
     """
@@ -267,6 +289,7 @@ class CopilotLLM(LLM):
         self,
         model: str = "claude-sonnet-4.5",
         temperature: float = 0.7,
+        timeout: int = 60,
         token_file: Optional[Path] = None,
         **kwargs,
     ):
@@ -276,12 +299,14 @@ class CopilotLLM(LLM):
         Args:
             model: Copilot model name (default: claude-sonnet-4.5)
             temperature: Sampling temperature (0-2)
+            timeout: Request timeout in seconds (default: 60)
             token_file: Custom token file path (default: ~/.config/mycopilot/github_token.json)
             **kwargs: Additional parameters for Copilot API
         """
         super().__init__()
         self.model = model
         self.temperature = temperature
+        self.timeout = timeout
         self.config = kwargs
 
         # Use custom token file if provided, otherwise use default
@@ -358,7 +383,7 @@ class CopilotLLM(LLM):
                     self.COPILOT_CHAT_ENDPOINT,
                     headers=headers,
                     json=payload,
-                    timeout=60,
+                    timeout=self.timeout,
                 )
                 response.raise_for_status()
 
@@ -378,33 +403,49 @@ class CopilotLLM(LLM):
             except requests.exceptions.RequestException as e:
                 last_error = e
 
+                # Check if this is a timeout error
+                is_timeout = isinstance(
+                    e, (requests.exceptions.Timeout, requests.exceptions.ReadTimeout)
+                )
+
                 # Check if this is a rate limit error (429)
+                is_rate_limit = False
                 if hasattr(e, "response") and e.response is not None:
                     status_code = e.response.status_code
+                    is_rate_limit = status_code == 429
 
-                    if status_code == 429:
-                        # Rate limit error - retry with exponential backoff
-                        if attempt < max_retries - 1:
-                            wait_time = 2**attempt  # 1s, 2s, 4s, 8s, 16s
-                            print(
-                                f"⚠️  Rate limit (429) hit. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})"
+                # Retry on timeout or rate limit
+                if is_timeout or is_rate_limit:
+                    if attempt < max_retries - 1:
+                        wait_time = 2**attempt  # 1s, 2s, 4s, 8s, 16s
+                        error_type = "Timeout" if is_timeout else "Rate limit (429)"
+                        print(
+                            f"⚠️  {error_type} hit. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        # Last attempt failed
+                        if is_timeout:
+                            raise RuntimeError(
+                                f"GitHub Copilot API request timed out after {max_retries} retries.\n"
+                                f"Timeout: {self.timeout}s\n"
+                                f"Consider increasing timeout for long-running tasks."
                             )
-                            time.sleep(wait_time)
-                            continue
                         else:
-                            # Last attempt failed
                             raise RuntimeError(
                                 f"GitHub Copilot API rate limit exceeded after {max_retries} retries.\n"
                                 f"Status: 429\n"
                                 f"Response: {e.response.text if hasattr(e.response, 'text') else 'N/A'}"
                             )
-                    else:
-                        # Non-rate-limit error - fail immediately
-                        raise RuntimeError(
-                            f"GitHub Copilot API request failed: {e}\n"
-                            f"Status: {status_code}\n"
-                            f"Response: {e.response.text if hasattr(e.response, 'text') else 'N/A'}"
-                        )
+
+                # Non-retryable error - fail immediately
+                if hasattr(e, "response") and e.response is not None:
+                    raise RuntimeError(
+                        f"GitHub Copilot API request failed: {e}\n"
+                        f"Status: {e.response.status_code}\n"
+                        f"Response: {e.response.text if hasattr(e.response, 'text') else 'N/A'}"
+                    )
                 else:
                     # No response object - fail immediately
                     raise RuntimeError(

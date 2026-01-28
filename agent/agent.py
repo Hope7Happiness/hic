@@ -352,6 +352,25 @@ class Agent:
         for callback in self.callbacks:
             callback.on_llm_response(iteration, llm_output)
 
+        # Check and perform compaction if needed (Checkpoint 1: After initial LLM response)
+        try:
+            from agent.compaction import check_and_compact
+
+            compacted = await check_and_compact(self.llm, agent_id)
+            if compacted is not None:
+                self.llm.set_history(compacted)
+        except Exception as e:
+            # Compaction failed - log and continue with original history
+            try:
+                from agent.async_logger import get_logger, LogLevel
+
+                logger = get_logger()
+                await logger.log(
+                    LogLevel.WARNING, agent_id, f"Compaction error: {e}", "COMPACTION"
+                )
+            except Exception:
+                pass
+
         while iteration < self.max_iterations:
             iteration += 1
 
@@ -471,6 +490,28 @@ class Agent:
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
 
+                # Check and perform compaction if needed (After tool execution)
+                try:
+                    from agent.compaction import check_and_compact
+
+                    compacted = await check_and_compact(self.llm, agent_id)
+                    if compacted is not None:
+                        self.llm.set_history(compacted)
+                except Exception as e:
+                    # Compaction failed - log and continue with original history
+                    try:
+                        from agent.async_logger import get_logger, LogLevel
+
+                        logger = get_logger()
+                        await logger.log(
+                            LogLevel.WARNING,
+                            agent_id,
+                            f"Compaction error: {e}",
+                            "COMPACTION",
+                        )
+                    except Exception:
+                        pass
+
             elif action.type == "launch_subagents":
                 # Launch subagents (instant, non-blocking)
                 result = await self._launch_subagents(
@@ -492,6 +533,28 @@ class Agent:
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
 
+                # Check and perform compaction if needed (After launching subagents)
+                try:
+                    from agent.compaction import check_and_compact
+
+                    compacted = await check_and_compact(self.llm, agent_id)
+                    if compacted is not None:
+                        self.llm.set_history(compacted)
+                except Exception as e:
+                    # Compaction failed - log and continue with original history
+                    try:
+                        from agent.async_logger import get_logger, LogLevel
+
+                        logger = get_logger()
+                        await logger.log(
+                            LogLevel.WARNING,
+                            agent_id,
+                            f"Compaction error: {e}",
+                            "COMPACTION",
+                        )
+                    except Exception:
+                        pass
+
             elif action.type == "send_message":
                 # Send a message to a peer agent
                 observation = await self._execute_send_message(action, agent_id)
@@ -510,6 +573,28 @@ class Agent:
                 # Notify callbacks: LLM response
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
+
+                # Check and perform compaction if needed (Checkpoint 2: After LLM call in main loop)
+                try:
+                    from agent.compaction import check_and_compact
+
+                    compacted = await check_and_compact(self.llm, agent_id)
+                    if compacted is not None:
+                        self.llm.set_history(compacted)
+                except Exception as e:
+                    # Compaction failed - log and continue with original history
+                    try:
+                        from agent.async_logger import get_logger, LogLevel
+
+                        logger = get_logger()
+                        await logger.log(
+                            LogLevel.WARNING,
+                            agent_id,
+                            f"Compaction error: {e}",
+                            "COMPACTION",
+                        )
+                    except Exception:
+                        pass
 
             elif action.type == "wait":
                 # Save state and suspend again
@@ -681,6 +766,25 @@ class Agent:
         # Notify callbacks: LLM response
         for callback in self.callbacks:
             callback.on_llm_response(iteration, llm_output)
+
+        # Check and perform compaction if needed (Checkpoint 3: After resume LLM call)
+        try:
+            from agent.compaction import check_and_compact
+
+            compacted = await check_and_compact(self.llm, agent_id)
+            if compacted is not None:
+                self.llm.set_history(compacted)
+        except Exception as e:
+            # Compaction failed - log and continue with original history
+            try:
+                from agent.async_logger import get_logger, LogLevel
+
+                logger = get_logger()
+                await logger.log(
+                    LogLevel.WARNING, agent_id, f"Compaction error: {e}", "COMPACTION"
+                )
+            except Exception:
+                pass
 
         # Continue execution loop from where we left off
         while iteration < self.max_iterations:

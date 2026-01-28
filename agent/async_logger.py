@@ -408,6 +408,90 @@ class AsyncLogger:
         """Log error"""
         await self.log(LogLevel.ERROR, agent_id, error_msg)
 
+    async def compaction_triggered(
+        self, agent_id: str, current_tokens: int, threshold_tokens: int, model: str
+    ):
+        """
+        Log when context compaction is triggered.
+
+        Args:
+            agent_id: Agent performing compaction
+            current_tokens: Current token count
+            threshold_tokens: Threshold that triggered compaction
+            model: Model name
+        """
+        percentage = (
+            (current_tokens / threshold_tokens * 100) if threshold_tokens > 0 else 0
+        )
+        await self.log(
+            LogLevel.INFO,
+            agent_id,
+            f"🔄 Context compaction triggered: {current_tokens:,} tokens "
+            f"({percentage:.1f}% of threshold: {threshold_tokens:,}) [model: {model}]",
+            "COMPACT",
+        )
+
+    async def compaction_success(
+        self,
+        agent_id: str,
+        before_tokens: int,
+        after_tokens: int,
+        before_messages: int,
+        after_messages: int,
+    ):
+        """
+        Log successful compaction.
+
+        Args:
+            agent_id: Agent that performed compaction
+            before_tokens: Token count before compaction
+            after_tokens: Token count after compaction
+            before_messages: Message count before compaction
+            after_messages: Message count after compaction
+        """
+        tokens_saved = before_tokens - after_tokens
+        messages_removed = before_messages - after_messages
+        savings_pct = (tokens_saved / before_tokens * 100) if before_tokens > 0 else 0
+
+        await self.log(
+            LogLevel.INFO,
+            agent_id,
+            f"✅ Compaction successful: {before_tokens:,} → {after_tokens:,} tokens "
+            f"(saved {tokens_saved:,} tokens, {savings_pct:.1f}%) | "
+            f"{before_messages} → {after_messages} messages (removed {messages_removed})",
+            "COMPACT",
+        )
+
+    async def compaction_failed(self, agent_id: str, reason: str):
+        """
+        Log failed compaction.
+
+        Args:
+            agent_id: Agent that attempted compaction
+            reason: Reason for failure
+        """
+        await self.log(
+            LogLevel.WARNING,
+            agent_id,
+            f"⚠️ Compaction failed: {reason}",
+            "COMPACT",
+        )
+
+    async def compaction_skipped(self, agent_id: str, reason: str):
+        """
+        Log skipped compaction.
+
+        Args:
+            agent_id: Agent that skipped compaction
+            reason: Reason for skipping
+        """
+        await self.log(
+            LogLevel.DEBUG,
+            agent_id,
+            f"⏭️ Compaction skipped: {reason}",
+            "COMPACT",
+        )
+
 
 # Global logger instance
 _global_logger: Optional[AsyncLogger] = None

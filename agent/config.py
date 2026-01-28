@@ -5,11 +5,13 @@ This module provides a centralized way to load configuration from:
 1. .env file (using python-dotenv)
 2. Environment variables
 3. Custom file paths (legacy support)
+4. Compaction configuration
 """
 
 import os
 from typing import Optional
 from pathlib import Path
+from dataclasses import dataclass, field
 
 
 def load_env():
@@ -133,6 +135,165 @@ def check_api_keys() -> dict:
         "openai": get_openai_api_key() is not None,
         "deepseek": get_deepseek_api_key() is not None,
     }
+
+
+# ============================================================================
+# Compaction Configuration
+# ============================================================================
+
+
+@dataclass
+class CompactionConfig:
+    """
+    Configuration for context compaction.
+
+    Compaction is triggered when the conversation history grows too large,
+    preventing context overflow errors. It summarizes older messages while
+    preserving recent context.
+
+    Attributes:
+        enabled: Enable/disable compaction (default: True)
+        threshold: Trigger compaction at this ratio of context limit (default: 0.75)
+        protect_recent_messages: Number of recent messages to preserve (default: 2)
+        reserved_output_tokens: Tokens reserved for LLM output (default: 2000)
+        counter_strategy: Token counter strategy - "simple", "tiktoken", or "auto" (default: "simple")
+        context_limits: Model-specific context limits (default: see below)
+
+    Default context limits:
+        - gpt-4: 128,000 tokens
+        - gpt-3.5-turbo: 16,384 tokens
+        - deepseek-chat: 128,000 tokens
+        - claude-sonnet-4.5: 200,000 tokens
+        - claude-haiku-4.5: 200,000 tokens
+        - o1-preview: 128,000 tokens
+        - o1-mini: 128,000 tokens
+        - default: 100,000 tokens (fallback)
+
+    Example:
+        >>> config = CompactionConfig(enabled=True, threshold=0.75)
+        >>> config.get_context_limit("gpt-4")  # Returns 128000
+        >>> config.should_compact(100000, "gpt-4")  # Returns True if > 96000 tokens
+    """
+
+    enabled: bool = True
+    threshold: float = 0.75
+    protect_recent_messages: int = 2
+    reserved_output_tokens: int = 2000
+    counter_strategy: str = "simple"
+
+    # Model-specific context limits (in tokens)
+    context_limits: dict = field(
+        default_factory=lambda: {
+            # OpenAI models
+            "gpt-4": 128_000,
+            "gpt-4o": 128_000,
+            "gpt-4o-mini": 128_000,
+            "gpt-3.5-turbo": 16_384,
+            "o1-preview": 128_000,
+            "o1-mini": 128_000,
+            # DeepSeek models
+            "deepseek-chat": 128_000,
+            # Claude models (via Copilot)
+            "claude-sonnet-4.5": 200_000,
+            "claude-haiku-4.5": 200_000,
+            # Default fallback
+            "default": 100_000,
+        }
+    )
+
+    def get_context_limit(self, model: str) -> int:
+        """
+        Get context limit for a specific model.
+
+        Args:
+            model: Model name (e.g., "gpt-4", "claude-sonnet-4.5")
+
+        Returns:
+            Context limit in tokens
+        """
+        # Try exact match first
+        if model in self.context_limits:
+            return self.context_limits[model]
+
+        # Try prefix match (e.g., "gpt-4-0125-preview" -> "gpt-4")
+        for key in self.context_limits:
+            if model.startswith(key):
+                return self.context_limits[key]
+
+        # Return default
+        return self.context_limits["default"]
+
+    def should_compact(self, current_tokens: int, model: str) -> bool:
+        """
+        Check if compaction should be triggered.
+
+        Args:
+            current_tokens: Current token count in history
+            model: Model name
+
+        Returns:
+            True if compaction should be triggered
+        """
+        if not self.enabled:
+            return False
+
+        limit = self.get_context_limit(model)
+        threshold_tokens = int(limit * self.threshold)
+
+        return current_tokens >= threshold_tokens
+
+    def get_max_compacted_tokens(self, model: str) -> int:
+        """
+        Get maximum tokens after compaction.
+
+        This ensures compacted history stays well below the threshold
+        to avoid repeated compaction cycles.
+
+        Args:
+            model: Model name
+
+        Returns:
+            Maximum tokens for compacted history
+        """
+        limit = self.get_context_limit(model)
+        # Target 50% of threshold (or 37.5% of total limit)
+        return int(limit * self.threshold * 0.5)
+
+
+# Global compaction config instance
+_compaction_config: Optional[CompactionConfig] = None
+
+
+def get_compaction_config() -> CompactionConfig:
+    """
+    Get the global compaction configuration.
+
+    Returns:
+        CompactionConfig instance (creates default if not set)
+    """
+    global _compaction_config
+    if _compaction_config is None:
+        _compaction_config = CompactionConfig()
+    return _compaction_config
+
+
+def set_compaction_config(config: CompactionConfig):
+    """
+    Set the global compaction configuration.
+
+    Args:
+        config: CompactionConfig instance
+    """
+    global _compaction_config
+    _compaction_config = config
+
+
+def reset_compaction_config():
+    """
+    Reset compaction configuration to default.
+    """
+    global _compaction_config
+    _compaction_config = CompactionConfig()
 
 
 # Auto-load .env file when module is imported
