@@ -29,8 +29,10 @@ import asyncio
 import time
 import os
 import sys
+from typing import Optional
+from typing import Union
 from agent.agent import Agent
-from agent.llm import DeepSeekLLM, CopilotLLM
+from agent.llm import DeepSeekLLM, CopilotLLM, CodexLLM, OpenAILLM
 from agent.tool import Tool
 from agent.async_logger import init_logger, close_logger
 from agent.config import load_env, get_deepseek_api_key
@@ -46,36 +48,36 @@ def get_llm_provider():
     Get LLM provider from environment variable or command line.
 
     Priority:
-    1. Command line argument: --llm copilot/deepseek
-    2. Environment variable: LLM_PROVIDER=copilot/deepseek
-    3. Default: copilot
+    1. Command line argument: --llm copilot/deepseek/codex/openai
+    2. Environment variable: LLM_PROVIDER=copilot/deepseek/codex/openai
+    3. Default: codex
 
     Returns:
-        str: "copilot" or "deepseek"
+        str: "copilot" or "deepseek" or "codex"
     """
     # Check command line arguments
     if "--llm" in sys.argv:
         idx = sys.argv.index("--llm")
         if idx + 1 < len(sys.argv):
             provider = sys.argv[idx + 1].lower()
-            if provider in ["copilot", "deepseek"]:
+            if provider in ["copilot", "deepseek", "codex", "openai"]:
                 return provider
 
     # Check environment variable
     provider = os.environ.get("LLM_PROVIDER", "copilot").lower()
-    if provider in ["copilot", "deepseek"]:
+    if provider in ["copilot", "deepseek", "codex", "openai"]:
         return provider
 
     # Default
-    return "copilot"
+    return "codex"
 
 
-def create_llm(provider: str | None = None):
+def create_llm(provider:Union[str, None] = None):
     """
     Create LLM instance based on provider.
 
     Args:
-        provider: "copilot" or "deepseek" (auto-detect if None)
+        provider: "copilot" or "deepseek" or "codex" or "openai" (auto-detect if None)
 
     Returns:
         LLM instance
@@ -91,9 +93,20 @@ def create_llm(provider: str | None = None):
             )
         print(f"🤖 Using DeepSeek LLM (model: deepseek-chat)")
         return DeepSeekLLM(api_key=api_key, model="deepseek-chat")
-    else:  # copilot
+    elif provider == "copilot":
         print(f"🤖 Using GitHub Copilot LLM (model: claude-haiku-4.5)")
         return CopilotLLM(model="claude-haiku-4.5", temperature=0.7)
+    elif provider == "codex":
+        print(f"🤖 Using Codex LLM (model: gpt-5.2)")
+        return CodexLLM(model="gpt-5.2", temperature=0.7)
+    elif provider == "openai":
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY not set for OpenAI provider")
+        print(f"🤖 Using OpenAI LLM (model: gpt-4o)")
+        return OpenAILLM(model="gpt-4o", api_key=api_key, temperature=0.7)
+    else:
+        raise ValueError(f"Unsupported LLM provider: {provider}")
 
 
 # ============================================================================
@@ -311,6 +324,7 @@ async def main():
 
     # Get LLM provider
     provider = get_llm_provider()
+    assert provider == 'codex', "Only codex is supported for now"
 
     # Initialize async logger
     print("=" * 70)

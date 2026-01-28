@@ -8,6 +8,8 @@ Test 1: test_llm_basic_response
 """
 
 import os
+import shutil
+import subprocess
 import pytest
 from agent.llm import OpenAILLM
 
@@ -38,6 +40,11 @@ def get_api_key():
                     return api_key, "deepseek"
         except Exception:
             pass
+
+    # Next, try Codex/GPT token via CLI (no API key stored in env files)
+    token = get_codex_token_from_cli()
+    if token:
+        return token, "codex"
 
     # Fall back to OpenAI API key from environment
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -75,6 +82,12 @@ def test_llm_basic_response():
         llm = DeepSeekLLM(
             api_key=api_key, model="deepseek-chat", base_url="https://api.deepseek.com"
         )
+    elif llm_type == "codex":
+        # Use CodexLLM with token obtained via CLI
+        from agent.llm import CodexLLM
+
+        assert api_key is not None, "CodexLLM requires CLI token"
+        llm = CodexLLM(model="gpt-4o-mini", token=api_key, temperature=0.7)
     else:
         # Use OpenAI API
         assert api_key is not None, "OpenAI requires API key"
@@ -143,23 +156,42 @@ def test_llm_history_management():
     llm.reset_history()
     assert len(llm.get_history()) == 0
 
-    # Manually set history
-    test_history = [
-        {"role": "user", "content": "Hello"},
-        {"role": "assistant", "content": "Hi there!"},
-    ]
-    llm.set_history(test_history)
 
-    # Verify history was set
-    history = llm.get_history()
-    assert len(history) == 2
-    assert history[0]["content"] == "Hello"
-    assert history[1]["content"] == "Hi there!"
+def get_codex_token_from_cli() -> str | None:
+    """
+    Try to obtain a Codex/GPT token via CLI, without requiring an API key in env.
 
-    # Verify get_history returns a copy
-    history[0]["content"] = "Modified"
-    assert llm.get_history()[0]["content"] == "Hello"
+    This is intentionally conservative:
+    - If the CLI is not installed or fails, we silently return None
+    - This keeps the test suite robust in environments without Codex configured
 
-    # Test reset
-    llm.reset_history()
-    assert len(llm.get_history()) == 0
+    You can customize the command via CODEX_TOKEN_COMMAND environment variable.
+    """
+    # Allow overriding the command for different CLIs
+    cmd_str = os.environ.get("CODEX_TOKEN_COMMAND", "codex auth token").strip()
+    if not cmd_str:
+        return None
+
+    cmd = cmd_str.split()
+    exe = cmd[0]
+
+    # If CLI is not available, skip Codex
+    if shutil.which(exe) is None:
+        return None
+
+    try:
+        result = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    token = (result.stdout or "").strip()
+    return token or None

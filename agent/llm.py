@@ -10,6 +10,7 @@ This module provides:
 import os
 import copy
 import time
+import subprocess
 from abc import ABC, abstractmethod
 from typing import List, Dict, Optional
 from openai import OpenAI
@@ -456,3 +457,167 @@ class CopilotLLM(LLM):
         raise RuntimeError(
             f"GitHub Copilot API request failed after {max_retries} retries: {last_error}"
         )
+
+class CodexLLM(LLM):
+    """
+    Codex LLM implementation that talks to the **Codex CLI** (`codex exec`),
+    not directly to the OpenAI Platform API.
+
+    This matches the desired workflow:
+
+    - 你在终端里先 `codex login`（或在 CI 里用 `CODEX_API_KEY`）
+    - Python 这边只调用 `codex exec`，完全复用 Codex 的认证与订阅配额
+
+    这样就不会再走 `openai.RateLimitError: insufficient_quota` 的 Platform 额度，
+    而是使用 Codex CLI 自己的计费与限流。
+    """
+
+    def __init__(
+        self,
+        model: str = "gpt-5.2",
+        *,
+        token: Optional[str] = None,  # 保留参数以兼容旧调用，不再使用
+        token_env_vars: Optional[list[str]] = None,  # 同上
+        token_command: Optional[list[str]] = None,  # 同上
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        **kwargs,
+    ):
+        """
+        Initialize CodexLLM.
+
+        Args:
+            model: Codex CLI 使用的模型名，对应 `codex --model` 选项。
+            token, token_env_vars, token_command:
+                为了兼容旧代码而保留，但当前基于 Codex CLI，不再使用这些参数。
+            temperature, max_tokens, **kwargs:
+                目前不直接映射到 Codex CLI 选项，只保存在实例上备用。
+        """
+        super().__init__()
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.config = kwargs
+
+    def chat(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        """
+        Send a message and get a response using the Codex CLI (`codex exec`).
+
+        为了更接近 Codex 交互式 CLI 的体验，这里使用：
+
+            codex exec --json --model <model> "<prompt>"
+
+        然后从 JSONL 事件流中提取**最后一条 assistant 文本消息**，
+        避免把内部日志、工具调用等噪音混进回复里。
+
+        注意：由于 codex exec 每次调用都是独立进程，为了支持多轮对话，
+        我们会把完整的 history 格式化成一个长 prompt 一起传给 Codex。
+        """
+        # 维护本地对话历史
+        if not self.history and system_prompt:
+            self.history.append({"role": "system", "content": system_prompt})
+
+        self.history.append({"role": "user", "content": prompt})
+
+        # 把完整 history 格式化成一个 prompt，让 Codex 能理解上下文
+        # 这样多轮对话时 Codex 也能知道之前发生了什么
+        def _format_history_as_prompt(history: List[Dict[str, str]]) -> str:
+            parts = []
+            for msg in history:
+                role = msg["role"]
+                content = msg["content"]
+                if role == "system":
+                    parts.append(f"[System]\n{content}")
+                elif role == "user":
+                    parts.append(f"[User]\n{content}")
+                elif role == "assistant":
+                    parts.append(f"[Assistant]\n{content}")
+                elif role == "tool":
+                    parts.append(f"[Tool Result]\n{content}")
+            return "\n\n".join(parts)
+
+        cli_prompt = _format_history_as_prompt(self.history)
+
+        cmd = ["codex", "exec", "--json"]
+        if self.model:
+            cmd += ["--model", self.model]
+        cmd.append(cli_prompt)
+
+        try:
+            result = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,  # hard cap to avoid hanging indefinitely
+            )
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                "Codex CLI not found. Please ensure `codex` is installed and in PATH."
+            ) from e
+        except subprocess.TimeoutExpired as e:
+            raise RuntimeError(
+                "Codex CLI call timed out after 120 seconds. "
+                "The task may be too complex or waiting on approvals; "
+                "try simplifying the prompt or running Codex directly to debug."
+            ) from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to invoke Codex CLI: {e}") from e
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Codex CLI returned non-zero exit code {result.returncode}.\n"
+                f"Command: {' '.join(cmd)}\n"
+                f"stderr:\n{result.stderr}"
+            )
+
+        # 解析 JSONL，尽量找到“最后一条 assistant 文本消息”
+        def _extract_last_assistant_text(jsonl: str) -> str:
+            last_text = ""
+            if not jsonl:
+                return last_text
+
+            for line in jsonl.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    evt = json.loads(line)
+                except Exception:
+                    continue
+
+                if not isinstance(evt, dict):
+                    continue
+
+                # Codex CLI 实际格式：
+                # {"type": "item.completed", "item": {"type": "agent_message", "text": "..."}}
+                if evt.get("type") == "item.completed":
+                    item = evt.get("item")
+                    if isinstance(item, dict) and item.get("type") == "agent_message":
+                        text = item.get("text")
+                        if isinstance(text, str) and text.strip():
+                            last_text = text.strip()
+
+                # 兼容其他可能的格式
+                # {"type": "...", "message": {"role": "assistant", "content": "..."}}
+                msg = evt.get("message")
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
+                    content = msg.get("content")
+                    if isinstance(content, str) and content.strip():
+                        last_text = content.strip()
+
+                # {"type": "assistant_message", "content": "..."}
+                if evt.get("type") in ("assistant_message", "message"):
+                    content = evt.get("content")
+                    if isinstance(content, str) and content.strip():
+                        last_text = content.strip()
+
+            return last_text
+
+        assistant_message = _extract_last_assistant_text(result.stdout)
+        if not assistant_message:
+            assistant_message = "[Codex returned empty response]"
+
+        self.history.append({"role": "assistant", "content": assistant_message})
+        return assistant_message
+

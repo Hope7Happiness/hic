@@ -14,6 +14,7 @@ from typing import Any, Optional, Callable, Awaitable, Protocol
 from enum import Enum
 import fnmatch
 from pathlib import Path
+from typing import Union
 
 
 class PermissionType(str, Enum):
@@ -57,7 +58,7 @@ class PermissionRequest:
         ... )
     """
 
-    permission: PermissionType | str
+    permission: Union[PermissionType, str]
     patterns: list[str] = field(default_factory=list)
     always: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -160,7 +161,7 @@ class AutoApproveHandler:
         self._patterns: dict[PermissionType, list[str]] = {}
         self._fallback_handler = fallback_handler
 
-    def add_pattern(self, permission_type: PermissionType | str, pattern: str):
+    def add_pattern(self, permission_type: Union[PermissionType, str], pattern: str):
         """
         Add a pattern that should be auto-approved.
 
@@ -177,7 +178,7 @@ class AutoApproveHandler:
             self._patterns[perm] = []
         self._patterns[perm].append(pattern)
 
-    def add_patterns(self, permission_type: PermissionType | str, patterns: list[str]):
+    def add_patterns(self, permission_type: Union[PermissionType, str], patterns: list[str]):
         """
         Add multiple patterns for a permission type.
 
@@ -340,7 +341,7 @@ class AlwaysDenyHandler:
 # Helper functions for common permission checks
 
 
-def is_path_safe(file_path: str | Path, cwd: str | Path) -> bool:
+def is_path_safe(file_path: Union[str, Path], cwd: Union[str, Path]) -> bool:
     """
     Check if a file path is safe (doesn't escape the project directory).
 

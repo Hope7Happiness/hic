@@ -26,6 +26,7 @@ from agent.agent import Agent
 from agent.tool import Tool
 from agent.llm import DeepSeekLLM
 from agent.llm import CopilotLLM
+from agent.llm import CodexLLM
 from agent.async_logger import init_logger, close_logger
 from agent.config import get_deepseek_api_key
 from agent.llm import LLM
@@ -302,7 +303,7 @@ def create_parent_agent(llm, agent_a, agent_b) -> Agent:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "llm_type", ["deepseek", "copilot"]
+    "llm_type", ["deepseek", "copilot", "codex"]
 )  # Default to real LLM flow
 async def test_agent_communication(llm_type):
     """
@@ -328,6 +329,13 @@ async def test_agent_communication(llm_type):
             llm_parent = CopilotLLM(model="claude-haiku-4.5", temperature=0.7)
             llm_a = CopilotLLM(model="claude-haiku-4.5", temperature=0.7)
             llm_b = CopilotLLM(model="claude-haiku-4.5", temperature=0.7)
+        elif llm_type == "codex":
+            # When using Codex with a ChatGPT account, only a subset of models
+            # are supported by the Codex CLI. Use the Codex-default model
+            # (e.g. gpt-5.2) instead of gpt-4o-mini to avoid 400 errors.
+            llm_parent = CodexLLM(model="gpt-5.2", temperature=0.7)
+            llm_a = CodexLLM(model="gpt-5.2", temperature=0.7)
+            llm_b = CodexLLM(model="gpt-5.2", temperature=0.7)
         else:
             raise ValueError(f"Unsupported real LLM type: {llm_type}")
     else:
@@ -395,4 +403,4 @@ async def test_agent_communication(llm_type):
 
 if __name__ == "__main__":
     # Run test directly
-    asyncio.run(test_agent_communication("deepseek"))
+    asyncio.run(test_agent_communication("codex"))
