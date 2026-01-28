@@ -10,6 +10,8 @@ This module provides:
 import os
 import copy
 import time
+import json
+import urllib.request
 import subprocess
 from abc import ABC, abstractmethod
 from typing import List, Dict, Optional
@@ -184,6 +186,60 @@ class DeepSeekLLM(LLM):
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         # Only store valid API parameters (not initialization parameters)
         self.config = kwargs
+        self._log_balance()
+
+    def _log_balance(self) -> None:
+        """Fetch and log current DeepSeek balance."""
+        try:
+            balance_url = self.base_url.rstrip("/") + "/user/balance"
+            req = urllib.request.Request(
+                balance_url,
+                method="GET",
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+            )
+
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                payload = resp.read().decode("utf-8", errors="replace")
+                data = json.loads(payload)
+
+            if not isinstance(data, dict):
+                return
+
+            infos = data.get("balance_infos") or []
+            summary_parts = []
+            for info in infos:
+                currency = info.get("currency")
+                total = info.get("total_balance")
+                granted = info.get("granted_balance")
+                topped = info.get("topped_up_balance")
+                if currency is None or total is None:
+                    continue
+                summary_parts.append(
+                    f"{currency} total={total} (granted={granted}, topped_up={topped})"
+                )
+
+            summary = "; ".join(summary_parts) if summary_parts else "(no balance info)"
+
+            try:
+                from agent.async_logger import get_logger, LogLevel
+                import asyncio
+
+                logger = get_logger()
+                asyncio.create_task(
+                    logger.log(
+                        LogLevel.INFO,
+                        "DeepSeekLLM",
+                        f"💰 DeepSeek balance: {summary}",
+                        "LLM",
+                    )
+                )
+            except Exception:
+                print(f"💰 DeepSeek balance: {summary}")
+        except Exception:
+            return
 
     def chat(
         self, prompt: str, system_prompt: Optional[str] = None, max_retries: int = 5
@@ -458,6 +514,7 @@ class CopilotLLM(LLM):
             f"GitHub Copilot API request failed after {max_retries} retries: {last_error}"
         )
 
+
 class CodexLLM(LLM):
     """
     Codex LLM implementation that talks to the **Codex CLI** (`codex exec`),
@@ -620,4 +677,3 @@ class CodexLLM(LLM):
 
         self.history.append({"role": "assistant", "content": assistant_message})
         return assistant_message
-

@@ -28,6 +28,7 @@ class PermissionType(str, Enum):
     WEBFETCH = "webfetch"  # Fetch web content
     QUESTION = "question"  # Ask user questions
     EXECUTE = "execute"  # Execute code/scripts
+    TODO = "todo"  # Manage session todo list
 
 
 @dataclass
@@ -105,7 +106,7 @@ class PermissionRequest:
 class PermissionDeniedError(Exception):
     """Raised when a permission request is denied."""
 
-    def __init__(self, request: PermissionRequest, reason: str = None):
+    def __init__(self, request: PermissionRequest, reason: Optional[str] = None):
         self.request = request
         self.reason = reason or "Permission denied"
         super().__init__(f"{self.reason}: {request.permission} for {request.patterns}")
@@ -178,7 +179,9 @@ class AutoApproveHandler:
             self._patterns[perm] = []
         self._patterns[perm].append(pattern)
 
-    def add_patterns(self, permission_type: Union[PermissionType, str], patterns: list[str]):
+    def add_patterns(
+        self, permission_type: Union[PermissionType, str], patterns: list[str]
+    ):
         """
         Add multiple patterns for a permission type.
 

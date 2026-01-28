@@ -83,21 +83,22 @@ class CompactionDetector:
         )
 
         # Debug logging
-        try:
-            from agent.async_logger import get_logger, LogLevel
-            import asyncio
+        if self.config.debug_log:
+            try:
+                from agent.async_logger import get_logger, LogLevel
+                import asyncio
 
-            logger = get_logger()
-            asyncio.create_task(
-                logger.log(
-                    LogLevel.DEBUG,
-                    "compaction",
-                    f"should_compact check: enabled={self.config.enabled}, tokens={current_tokens}>={threshold_tokens}? {current_tokens >= threshold_tokens}, old_msgs={num_old_messages}>=3? {has_enough_messages} → {should_compact}",
-                    "COMPACT",
+                logger = get_logger()
+                asyncio.create_task(
+                    logger.log(
+                        LogLevel.DEBUG,
+                        "compaction",
+                        f"should_compact check: enabled={self.config.enabled}, tokens={current_tokens}>={threshold_tokens}? {current_tokens >= threshold_tokens}, old_msgs={num_old_messages}>=3? {has_enough_messages} → {should_compact}",
+                        "COMPACT",
+                    )
                 )
-            )
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         return should_compact, current_tokens, threshold_tokens
 
@@ -370,24 +371,25 @@ async def check_and_compact(
     should_compact, current_tokens, threshold_tokens = detector.should_compact()
 
     # Debug logging for why compaction didn't trigger
-    try:
-        from agent.async_logger import get_logger, LogLevel
+    if config.debug_log:
+        try:
+            from agent.async_logger import get_logger, LogLevel
 
-        logger = get_logger()
-        if not should_compact:
-            history = llm.get_history()
-            protected_count = config.protect_recent_messages
-            start_idx = 1 if (history and history[0].get("role") == "system") else 0
-            split_point = len(history) - protected_count
-            num_old_messages = max(0, split_point - start_idx)
-            await logger.log(
-                LogLevel.DEBUG,
-                agent_id,
-                f"Compaction NOT triggered: tokens={current_tokens}/{threshold_tokens}, old_msgs={num_old_messages}, enabled={config.enabled}",
-                "COMPACT",
-            )
-    except Exception:
-        pass
+            logger = get_logger()
+            if not should_compact:
+                history = llm.get_history()
+                protected_count = config.protect_recent_messages
+                start_idx = 1 if (history and history[0].get("role") == "system") else 0
+                split_point = len(history) - protected_count
+                num_old_messages = max(0, split_point - start_idx)
+                await logger.log(
+                    LogLevel.DEBUG,
+                    agent_id,
+                    f"Compaction NOT triggered: tokens={current_tokens}/{threshold_tokens}, old_msgs={num_old_messages}, enabled={config.enabled}",
+                    "COMPACT",
+                )
+        except Exception:
+            pass
 
     if not should_compact:
         return None

@@ -10,6 +10,9 @@
 4. **read** - 安全读取文件，支持分页、行号、二进制检测
 5. **write** - 安全写入/创建文件，自动生成 diff、可创建父目录
 6. **edit** - 容错字符串替换，多策略匹配 + diff 输出
+7. **grep** - 正则内容搜索（rg 优先 + Python fallback）
+8. **glob** - 文件模式匹配（rg 优先 + Python fallback）
+9. **todowrite/todoread** - 会话级任务管理
 
 ## 文件结构（核心相关）
 
@@ -190,7 +193,7 @@ from agent.tools import edit
 from agent.tool import Tool
 
 edit_tool = Tool(edit)
-# 调用参数：file_path, old_string, new_string, replace_all=False, ctx 自动注入
+# 调用参数：file_path, old_string, new_string, replace_all=False, lock_timeout=5.0, ctx 自动注入
 ```
 
 特点：
@@ -199,6 +202,59 @@ edit_tool = Tool(edit)
 - replace_all 支持
 - 生成 diff 输出，附带 strategy 元数据
 - 路径、权限安全校验
+- 文件锁保护，防止并发写入（超时可配置）
+
+### 7. grep - 正则内容搜索（新）
+
+```python
+from agent.tools import grep
+from agent.tool import Tool
+
+grep_tool = Tool(grep)
+# 调用参数：pattern, path=None, include=None, max_results=100, context_lines=0, ctx 自动注入
+```
+
+特点：
+- ripgrep 优先（rg --json），无 rg 时 fallback 到 Python regex
+- 支持 include 文件过滤（如 "*.py"）
+- 输出包含文件/行号/列号
+- 自动截断大结果（OutputTruncator）
+- 权限类型为 READ
+
+### 8. glob - 文件模式匹配（新）
+
+```python
+from agent.tools import glob
+from agent.tool import Tool
+
+glob_tool = Tool(glob)
+# 调用参数：pattern, path=None, max_results=100, include_hidden=False, ctx 自动注入
+```
+
+特点：
+- ripgrep 优先（rg --files --glob），无 rg 时 fallback 到 Python glob
+- 按修改时间倒序排序（最新文件优先）
+- 结果数量限制 + 自动截断
+- 权限类型为 READ
+
+### 9. todo - 会话级任务管理（新）
+
+```python
+from agent.tools import todowrite, todoread
+from agent.tool import Tool
+
+todowrite_tool = Tool(todowrite)
+todoread_tool = Tool(todoread)
+# todowrite 参数：todos=[{id, content, status, priority}, ...]
+# todoread 无参数，ctx 自动注入
+```
+
+特点：
+- 每个 session 独立保存 todo 列表
+- 支持状态：pending / in_progress / completed / cancelled
+- 支持优先级：high / medium / low
+- 使用 Context 的 session metadata 持久化
+- 权限类型为 TODO
 
 ```python
 from agent.builtin_tools import calculator

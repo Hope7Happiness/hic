@@ -157,6 +157,7 @@ class CompactionConfig:
         protect_recent_messages: Number of recent messages to preserve (default: 2)
         reserved_output_tokens: Tokens reserved for LLM output (default: 2000)
         counter_strategy: Token counter strategy - "simple", "tiktoken", or "auto" (default: "simple")
+        debug_log: Enable compaction debug logs (default: False)
         context_limits: Model-specific context limits (default: see below)
 
     Default context limits:
@@ -180,6 +181,7 @@ class CompactionConfig:
     protect_recent_messages: int = 2
     reserved_output_tokens: int = 2000
     counter_strategy: str = "simple"
+    debug_log: bool = False
 
     # Model-specific context limits (in tokens)
     context_limits: dict = field(

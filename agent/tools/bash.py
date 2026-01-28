@@ -213,6 +213,155 @@ def extract_base_command_from_part(part: str) -> Optional[str]:
         return tokens[0] if tokens else None
 
 
+def _is_path_token(token: str) -> bool:
+    if not token:
+        return False
+    if token.startswith(("/", "./", "../", "~")):
+        return True
+    return "/" in token
+
+
+def _normalize_path(token: str, working_dir: str) -> Optional[str]:
+    try:
+        expanded = os.path.expanduser(token)
+        path = Path(expanded)
+        if not path.is_absolute():
+            path = (Path(working_dir).resolve() / path).resolve()
+        return str(path)
+    except Exception:
+        return None
+
+
+def _analyze_command(command: str, working_dir: str) -> dict:
+    base_commands = extract_base_commands(command)
+    uses_pipes = "|" in command
+    uses_substitution = "$(" in command or "`" in command
+
+    read_targets: list[str] = []
+    write_targets: list[str] = []
+    other_paths: list[str] = []
+
+    tokens: list[str] = []
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+
+    redirects = {
+        ">": "write",
+        ">>": "append",
+        "<": "read",
+        "2>": "write",
+        "2>>": "append",
+        "&>": "write",
+        "2>&1": "write",
+    }
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token in redirects:
+            target = tokens[i + 1] if i + 1 < len(tokens) else None
+            if target and redirects[token] == "read":
+                read_targets.append(target)
+            elif target:
+                write_targets.append(target)
+            i += 2
+            continue
+        if token.startswith(">>") or token.startswith(">"):
+            target = token.lstrip(">").strip()
+            if target:
+                write_targets.append(target)
+            i += 1
+            continue
+        if token.startswith("<"):
+            target = token.lstrip("<").strip()
+            if target:
+                read_targets.append(target)
+            i += 1
+            continue
+        if _is_path_token(token):
+            other_paths.append(token)
+        i += 1
+
+    paths = read_targets + write_targets + other_paths
+    normalized_paths = [
+        p for p in (_normalize_path(p, working_dir) for p in paths) if p
+    ]
+
+    external_paths = []
+    for p in normalized_paths:
+        try:
+            if not is_path_safe(Path(p), working_dir):
+                external_paths.append(p)
+        except Exception:
+            external_paths.append(p)
+
+    uses_write_redirect = len(write_targets) > 0
+
+    return {
+        "base_commands": base_commands,
+        "uses_pipes": uses_pipes,
+        "uses_substitution": uses_substitution,
+        "read_targets": read_targets,
+        "write_targets": write_targets,
+        "paths": paths,
+        "normalized_paths": normalized_paths,
+        "external_paths": external_paths,
+        "uses_write_redirect": uses_write_redirect,
+    }
+
+
+def _classify_risk(command: str, analysis: dict) -> tuple[str, list[str]]:
+    risks: list[str] = []
+
+    is_dangerous, danger_reason = is_command_dangerous(command)
+    if is_dangerous:
+        risks.append("dangerous_pattern")
+
+    base_commands = analysis.get("base_commands", [])
+    if "sudo" in base_commands:
+        risks.append("sudo")
+
+    if analysis.get("uses_substitution"):
+        risks.append("command_substitution")
+
+    if analysis.get("uses_pipes"):
+        risks.append("piped_commands")
+
+    if analysis.get("uses_write_redirect"):
+        risks.append("write_redirect")
+
+    if analysis.get("external_paths"):
+        risks.append("external_paths")
+
+    high_risk_commands = {"rm", "mkfs", "dd", "shred"}
+    if any(cmd in high_risk_commands for cmd in base_commands):
+        risks.append("destructive_command")
+
+    high_risk = (
+        is_dangerous
+        or "sudo" in base_commands
+        or "destructive_command" in risks
+        or (
+            analysis.get("uses_write_redirect")
+            and len(analysis.get("external_paths", [])) > 0
+        )
+    )
+
+    if high_risk:
+        return "high", risks
+
+    medium_risk_commands = {"mv", "cp", "chmod", "chown", "touch", "mkdir", "rmdir"}
+    if any(cmd in medium_risk_commands for cmd in base_commands):
+        return "medium", risks
+
+    if analysis.get("uses_write_redirect") or analysis.get("external_paths"):
+        return "medium", risks
+
+    return "low", risks
+
+
 def validate_command_safety(
     command: str, allowed_commands: Optional[Set[str]] = None
 ) -> tuple[bool, Optional[str]]:
@@ -298,6 +447,21 @@ async def bash(
                 working_dir=work_dir_str,
             )
 
+        analysis = _analyze_command(command, work_dir_str)
+        risk_level, risks = _classify_risk(command, analysis)
+
+        if risk_level == "high" and not allow_dangerous:
+            return ToolResult.from_error(
+                "Permission denied",
+                "High-risk command blocked by policy",
+                command=command,
+                risk_level=risk_level,
+                risks=risks,
+                external_paths=analysis.get("external_paths", []),
+                read_targets=analysis.get("read_targets", []),
+                write_targets=analysis.get("write_targets", []),
+            )
+
         # Validate command safety
         if not allow_dangerous:
             is_safe, safety_error = validate_command_safety(command, allowed_commands)
@@ -311,22 +475,20 @@ async def bash(
                     else None,
                 )
 
-        # Check for dangerous commands if not explicitly allowed
-        if not allow_dangerous:
-            is_dangerous, danger_reason = is_command_dangerous(command)
-            if is_dangerous:
-                return ToolResult.from_error(
-                    "Dangerous command blocked",
-                    danger_reason or "Command matches dangerous pattern",
-                    command=command,
-                )
-
         # Request permission
         permission_metadata = {
             "command": command,
             "working_dir": working_dir,
             "timeout": timeout,
             "allowed_commands": list(allowed_commands) if allowed_commands else "all",
+            "base_commands": analysis.get("base_commands", []),
+            "read_targets": analysis.get("read_targets", []),
+            "write_targets": analysis.get("write_targets", []),
+            "external_paths": analysis.get("external_paths", []),
+            "risk_level": risk_level,
+            "risks": risks,
+            "uses_pipes": analysis.get("uses_pipes"),
+            "uses_substitution": analysis.get("uses_substitution"),
         }
 
         await ctx.ask(
@@ -337,6 +499,14 @@ async def bash(
                 description=f"Execute command: {command[:50]}{'...' if len(command) > 50 else ''}",
             )
         )
+
+        risk_meta = {
+            "risk_level": risk_level,
+            "risks": risks,
+            "external_paths": analysis.get("external_paths", []),
+            "read_targets": analysis.get("read_targets", []),
+            "write_targets": analysis.get("write_targets", []),
+        }
 
         # Check abort before execution
         ctx.check_abort()
@@ -418,6 +588,7 @@ async def bash(
                 exit_code=exit_code,
                 duration_ms=duration_ms,
                 working_dir=working_dir,
+                **risk_meta,
                 **trunc_meta,
             )
         else:
@@ -438,6 +609,7 @@ async def bash(
                 exit_code=exit_code,
                 duration_ms=duration_ms,
                 working_dir=working_dir,
+                **risk_meta,
                 **trunc_meta,
             )
 

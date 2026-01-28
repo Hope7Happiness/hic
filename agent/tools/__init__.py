@@ -12,6 +12,9 @@ from .bash import bash, restricted_bash, DEFAULT_SAFE_COMMANDS
 from .read import read
 from .write import write
 from .edit import edit
+from .grep import grep
+from .glob import glob
+from .todo import todowrite, todoread
 
 __all__ = [
     "bash",
@@ -20,4 +23,8 @@ __all__ = [
     "read",
     "write",
     "edit",
+    "grep",
+    "glob",
+    "todowrite",
+    "todoread",
 ]

@@ -110,6 +110,7 @@ class Agent:
                 "webfetch": ["*"],
                 "question": ["*"],
                 "execute": ["*"],
+                "todo": ["*"],
             },
             working_directory=working_directory or ".",
         )
@@ -123,7 +124,17 @@ class Agent:
         # If no tools provided, register default builtin tools (bash, read, write, edit)
         if not self.tools:
             try:
-                from agent.tools import bash, restricted_bash, read, write, edit
+                from agent.tools import (
+                    bash,
+                    restricted_bash,
+                    read,
+                    write,
+                    edit,
+                    grep,
+                    glob,
+                    todowrite,
+                    todoread,
+                )
                 from agent.tool import Tool
 
                 default_tools = [
@@ -132,6 +143,10 @@ class Agent:
                     Tool(read, context=self.context),
                     Tool(write, context=self.context),
                     Tool(edit, context=self.context),
+                    Tool(grep, context=self.context),
+                    Tool(glob, context=self.context),
+                    Tool(todowrite, context=self.context),
+                    Tool(todoread, context=self.context),
                 ]
 
                 for tool in default_tools:
