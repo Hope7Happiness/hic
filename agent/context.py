@@ -150,6 +150,9 @@ class Context:
         # Metadata streaming callback
         self._metadata_callback: Optional[Callable[[dict], Awaitable[None]]] = None
 
+        # User input handler (for question tool)
+        self._user_input_handler: Optional[Callable[..., Any]] = None
+
         # Output truncator
         self._truncator = truncator or get_default_truncator()
 
@@ -275,6 +278,29 @@ class Context:
             callback: Async function that receives metadata dict
         """
         self._metadata_callback = callback
+
+    # User input handling
+
+    def set_user_input_handler(self, handler: Optional[Callable[..., Any]]) -> None:
+        """Set handler for user input prompts (question tool)."""
+        self._user_input_handler = handler
+
+    async def get_user_input(self, prompt: str, metadata: Optional[dict] = None) -> Any:
+        """Ask user for input using the configured handler."""
+        if self._user_input_handler is None:
+            raise RuntimeError("No user input handler configured")
+
+        handler = self._user_input_handler
+        if metadata is not None:
+            try:
+                result = handler(prompt, metadata)
+            except TypeError:
+                result = handler(prompt)
+        else:
+            result = handler(prompt)
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
 
     async def stream_metadata(self, data: dict[str, Any]) -> None:
         """

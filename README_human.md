@@ -45,6 +45,8 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 uv pip install openai pydantic pyyaml python-dotenv pytest requests 
 uv pip install Levenshtein # for edit distance calculations
 uv pip install tiktoken # for token counting and compaction
+uv pip install html2text beautifulsoup4 # for HTML parsing in webfetch tool
+uv pip install prompt_toolkit # for improved CLI experience
 
 # Configure API keys using .env (recommended)
 cp .env.example .env

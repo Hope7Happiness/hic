@@ -134,6 +134,8 @@ class Agent:
                     glob,
                     todowrite,
                     todoread,
+                    question,
+                    webfetch,
                 )
                 from agent.tool import Tool
 
@@ -147,6 +149,8 @@ class Agent:
                     Tool(glob, context=self.context),
                     Tool(todowrite, context=self.context),
                     Tool(todoread, context=self.context),
+                    Tool(question, context=self.context),
+                    Tool(webfetch, context=self.context),
                 ]
 
                 for tool in default_tools:

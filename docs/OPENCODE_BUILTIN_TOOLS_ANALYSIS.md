@@ -1689,10 +1689,10 @@ ctx.abort.addEventListener('abort', () => {
    - Session persistence
 
 **Deliverables:**
-- [ ] `agent/tools/grep.py`
-- [ ] `agent/tools/glob.py`
-- [ ] `agent/tools/todo.py`
-- [ ] Tests
+- [x] `agent/tools/grep.py`
+- [x] `agent/tools/glob.py`
+- [x] `agent/tools/todo.py`
+- [x] Tests
 
 ---
 

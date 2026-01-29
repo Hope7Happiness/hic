@@ -15,6 +15,8 @@ from .edit import edit
 from .grep import grep
 from .glob import glob
 from .todo import todowrite, todoread
+from .question import question
+from .webfetch import webfetch
 
 __all__ = [
     "bash",
@@ -27,4 +29,6 @@ __all__ = [
     "glob",
     "todowrite",
     "todoread",
+    "question",
+    "webfetch",
 ]

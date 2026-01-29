@@ -13,6 +13,8 @@
 7. **grep** - 正则内容搜索（rg 优先 + Python fallback）
 8. **glob** - 文件模式匹配（rg 优先 + Python fallback）
 9. **todowrite/todoread** - 会话级任务管理
+10. **question** - 交互式提问（阻塞等待用户输入）
+11. **webfetch** - 网址抓取（HTML/Markdown/Text）
 
 ## 文件结构（核心相关）
 
@@ -255,6 +257,40 @@ todoread_tool = Tool(todoread)
 - 支持优先级：high / medium / low
 - 使用 Context 的 session metadata 持久化
 - 权限类型为 TODO
+
+### 10. question - 交互式提问（新）
+
+```python
+from agent.tools import question
+from agent.tool import Tool
+
+question_tool = Tool(question)
+# 调用参数：questions=[{header, question, options, multiple?, custom?}], custom=True, ctx 自动注入
+```
+
+特点：
+- 支持多问题、单选/多选
+- 允许自定义答案（custom）
+- 需要 Context 配置 user input handler（可用 prompt_toolkit TUI）
+- 权限类型为 QUESTION
+
+### 11. webfetch - 网址抓取（新）
+
+```python
+from agent.tools import webfetch
+from agent.tool import Tool
+
+webfetch_tool = Tool(webfetch)
+# 调用参数：url, format="markdown", timeout=30, ctx 自动注入
+```
+
+特点：
+- HTML → Markdown / Text / HTML
+- JSON/XML 自动 pretty 输出
+- 二进制内容直接拒绝
+- 5MB 响应大小限制
+- 默认超时 30s
+- 权限类型为 WEBFETCH
 
 ```python
 from agent.builtin_tools import calculator
