@@ -8,7 +8,7 @@ Provides:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 from pathlib import Path
 import importlib.util
 from datetime import datetime
@@ -55,18 +55,129 @@ def _validate_todo(todo: dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _format_todos(todos: list[dict[str, Any]]) -> str:
-    if not todos:
-        return "(no todos)"
+def _sort_todos_for_display(todos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    status_order = {
+        "in_progress": 0,
+        "pending": 1,
+        "completed": 2,
+        "cancelled": 3,
+    }
+    priority_order = {"high": 0, "medium": 1, "low": 2}
 
-    lines = []
-    for idx, todo in enumerate(todos, start=1):
-        status = todo.get("status")
-        priority = todo.get("priority")
-        content = todo.get("content")
-        todo_id = todo.get("id")
-        lines.append(f"{idx}. [{status}] ({priority}) {content} (id={todo_id})")
-    return "\n".join(lines)
+    indexed = list(enumerate(todos))
+
+    def _key(item: tuple[int, dict[str, Any]]):
+        idx, todo = item
+        status = todo.get("status") or ""
+        priority = todo.get("priority") or ""
+        return (
+            status_order.get(status, 99),
+            priority_order.get(priority, 99),
+            idx,
+        )
+
+    indexed.sort(key=_key)
+    return [todo for _, todo in indexed]
+
+
+def _build_todo_display(todos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    status_icon = {
+        "pending": "[ ]",
+        "in_progress": "[~]",
+        "completed": "[x]",
+        "cancelled": "[-]",
+    }
+    status_color = {
+        "pending": "yellow",
+        "in_progress": "blue",
+        "completed": "green",
+        "cancelled": "red",
+    }
+    priority_color = {
+        "high": "red",
+        "medium": "yellow",
+        "low": "green",
+    }
+
+    display = []
+    for todo in todos:
+        status = todo.get("status") or ""
+        priority = todo.get("priority") or ""
+        display.append(
+            {
+                "status_icon": status_icon.get(status, "[ ]"),
+                "status_color": status_color.get(status, "gray"),
+                "priority_color": priority_color.get(priority, "gray"),
+            }
+        )
+    return display
+
+
+def _format_todos(todos: list[dict[str, Any]], updated_at: str | None = None) -> str:
+    title = "Todo list"
+    if updated_at:
+        title = f"{title} (updated {updated_at})"
+
+    todos = _sort_todos_for_display(todos)
+    lines = [title]
+
+    if not todos:
+        lines.append("(no todos)")
+    else:
+        for idx, todo in enumerate(todos, start=1):
+            status = todo.get("status") or ""
+            priority = todo.get("priority") or ""
+            content = todo.get("content") or ""
+            todo_id = todo.get("id")
+            suffix = f" (id={todo_id})" if todo_id else ""
+            lines.append(f"{idx}. [{status}] ({priority}) {content}{suffix}")
+
+    max_len = max(len(line) for line in lines) if lines else 0
+    bar = "-" * max_len
+    return "\n".join([bar] + lines + [bar])
+
+
+def _format_todo_prompt(todos: list[dict[str, Any]], updated_at: str | None) -> str:
+    header = "[Todo] Current list"
+    if updated_at:
+        header = f"[Todo] Current list (updated {updated_at})"
+
+    todos = _sort_todos_for_display(todos)
+    lines = [header]
+    if not todos:
+        lines.append("(no todos)")
+    else:
+        for idx, todo in enumerate(todos, start=1):
+            status = todo.get("status") or ""
+            priority = todo.get("priority") or ""
+            content = todo.get("content") or ""
+            todo_id = todo.get("id")
+            suffix = f" (id={todo_id})" if todo_id else ""
+            lines.append(f"{idx}) [{status}] ({priority}) {content}{suffix}")
+
+    max_len = max(len(line) for line in lines) if lines else 0
+    bar = "-" * max_len
+    return "\n".join([bar] + lines + [bar])
+
+
+async def _stream_todo_visualization(
+    ctx, todos: list[dict[str, Any]], updated_at: str | None
+) -> None:
+    todos = _sort_todos_for_display(todos)
+    prompt = _format_todo_prompt(todos, updated_at)
+    try:
+        await ctx.stream_metadata(
+            {
+                "type": "todo_list",
+                "title": "Todo list",
+                "updated_at": updated_at,
+                "todos": todos,
+                "display": _build_todo_display(todos),
+                "prompt": prompt,
+            }
+        )
+    except Exception:
+        return
 
 
 async def todowrite(todos: list[dict[str, Any]], ctx):
@@ -104,7 +215,8 @@ async def todowrite(todos: list[dict[str, Any]], ctx):
         }
         ctx.set_session_metadata("todos", payload)
 
-        output = _format_todos(todos)
+        await _stream_todo_visualization(ctx, todos, payload.get("updated_at"))
+        output = _format_todos(todos, payload.get("updated_at"))
         truncated, trunc_meta = ctx.truncate_output(output, context="todo list")
 
         return ToolResult.success(
@@ -143,7 +255,8 @@ async def todoread(ctx):
             todos = payload.get("todos") or []
             updated_at = payload.get("updated_at")
 
-        output = _format_todos(todos)
+        await _stream_todo_visualization(ctx, todos, updated_at)
+        output = _format_todos(todos, updated_at)
         truncated, trunc_meta = ctx.truncate_output(output, context="todo list")
 
         return ToolResult.success(

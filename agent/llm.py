@@ -171,6 +171,7 @@ class DeepSeekLLM(LLM):
         model: str = "deepseek-chat",
         base_url: str = "https://api.deepseek.com",
         timeout: int = 60,
+        max_retries: int = 5,
         **kwargs,
     ):
         """
@@ -187,6 +188,7 @@ class DeepSeekLLM(LLM):
         self.model = model
         self.base_url = base_url
         self.timeout = timeout
+        self.max_retries = max_retries
         self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
         # Only store valid API parameters (not initialization parameters)
         self.config = kwargs
@@ -250,7 +252,10 @@ class DeepSeekLLM(LLM):
             return
 
     def chat(
-        self, prompt: str, system_prompt: Optional[str] = None, max_retries: int = 5
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        max_retries: Optional[int] = None,
     ) -> str:
         """
         Send a message and get a response from DeepSeek.
@@ -273,80 +278,34 @@ class DeepSeekLLM(LLM):
         # Add user message to history
         self.history.append({"role": "user", "content": prompt})
 
-        # Call DeepSeek API with retry logic
-        last_error = None
-        for attempt in range(max_retries):
-            try:
-                messages: Any = self.history
+        # Call DeepSeek API once (retry logic is handled by Agent)
+        messages: Any = self.history
 
-                def _call_api():
-                    return self.client.chat.completions.create(  # type: ignore[call-arg]
-                        model=self.model,
-                        messages=cast(Any, messages),
-                        stream=False,
-                        timeout=self.timeout,
-                        **self.config,
-                    )
+        def _call_api():
+            return self.client.chat.completions.create(  # type: ignore[call-arg]
+                model=self.model,
+                messages=cast(Any, messages),
+                stream=False,
+                timeout=self.timeout,
+                **self.config,
+            )
 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(_call_api)
-                    try:
-                        response = future.result(timeout=self.timeout)
-                    except concurrent.futures.TimeoutError as e:
-                        future.cancel()
-                        raise TimeoutError(
-                            f"DeepSeek API request timed out after {self.timeout}s"
-                        ) from e
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_call_api)
+                try:
+                    response = future.result(timeout=self.timeout)
+                except concurrent.futures.TimeoutError as e:
+                    future.cancel()
+                    raise TimeoutError(
+                        f"DeepSeek API request timed out after {self.timeout}s"
+                    ) from e
+        except Exception as e:
+            raise RuntimeError(f"DeepSeek API request failed: {e}")
 
-                # Extract response text
-                assistant_message: str = response.choices[0].message.content or ""
-
-                # Add assistant response to history
-                self.history.append({"role": "assistant", "content": assistant_message})
-
-                return assistant_message
-
-            except Exception as e:
-                last_error = e
-
-                error_str = str(e).lower()
-                is_rate_limit = (
-                    "429" in error_str
-                    or "rate limit" in error_str
-                    or "too many requests" in error_str
-                )
-                is_timeout = (
-                    "timeout" in error_str
-                    or "timed out" in error_str
-                    or isinstance(e, TimeoutError)
-                )
-
-                if is_timeout or is_rate_limit:
-                    if attempt < max_retries - 1:
-                        wait_time = 2**attempt  # 1s, 2s, 4s, 8s, 16s
-                        error_type = "Timeout" if is_timeout else "Rate limit"
-                        print(
-                            f"⚠️  DeepSeek {error_type}. Retrying in {wait_time}s... "
-                            f"(attempt {attempt + 2}/{max_retries}, timeout={self.timeout}s)"
-                        )
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        if is_timeout:
-                            raise RuntimeError(
-                                f"DeepSeek API request timed out after {max_retries} retries. "
-                                f"Timeout: {self.timeout}s"
-                            )
-                        raise RuntimeError(
-                            f"DeepSeek API rate limit exceeded after {max_retries} retries: {e}"
-                        )
-
-                raise RuntimeError(f"DeepSeek API request failed: {e}")
-
-        # Should not reach here, but just in case
-        raise RuntimeError(
-            f"DeepSeek API request failed after {max_retries} retries: {last_error}"
-        )
+        assistant_message: str = response.choices[0].message.content or ""
+        self.history.append({"role": "assistant", "content": assistant_message})
+        return assistant_message
 
 
 class CopilotLLM(LLM):

@@ -1713,10 +1713,10 @@ ctx.abort.addEventListener('abort', () => {
    - Error handling
 
 **Deliverables:**
-- [ ] `agent/tools/question.py`
-- [ ] `agent/tools/webfetch.py`
-- [ ] UI integration for questions
-- [ ] Tests
+- [x] `agent/tools/question.py`
+- [x] `agent/tools/webfetch.py`
+- [x] UI integration for questions
+- [x] Tests
 
 ---
 

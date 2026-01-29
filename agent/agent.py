@@ -115,6 +115,8 @@ class Agent:
             working_directory=working_directory or ".",
         )
 
+        self._attach_todo_visualization()
+
         # Register tools with context
         self.tools = {}
         for tool in tools or []:
@@ -166,6 +168,143 @@ class Agent:
             self.system_prompt = self._build_default_system_prompt()
         else:
             self.system_prompt = system_prompt
+
+    def _attach_todo_visualization(self) -> None:
+        existing_callback = getattr(self.context, "_metadata_callback", None)
+
+        async def _combined_callback(data: Any) -> None:
+            if existing_callback:
+                await existing_callback(data)
+
+            if not isinstance(data, dict):
+                return
+            if data.get("type") != "todo_list":
+                return
+
+            todos = data.get("todos") or []
+            display = data.get("display") or []
+
+            if todos:
+                title = data.get("title") or "Todo list"
+                updated_at = data.get("updated_at")
+                header = f"{title} (updated {updated_at})" if updated_at else title
+
+                def _colorize(text: str, color: str) -> str:
+                    colors = {
+                        "red": "\033[31m",
+                        "green": "\033[32m",
+                        "yellow": "\033[33m",
+                        "blue": "\033[34m",
+                        "gray": "\033[90m",
+                    }
+                    code = colors.get(color)
+                    if not code:
+                        return text
+                    return f"{code}{text}\033[0m"
+
+                plain_lines = [header]
+                colored_lines = [header]
+
+                for idx, todo in enumerate(todos, start=1):
+                    status = todo.get("status") or ""
+                    priority = todo.get("priority") or ""
+                    content = todo.get("content") or ""
+                    todo_id = todo.get("id")
+                    suffix = f" (id={todo_id})" if todo_id else ""
+
+                    display_meta = display[idx - 1] if idx - 1 < len(display) else {}
+                    icon = display_meta.get("status_icon", "[ ]")
+                    status_color = display_meta.get("status_color", "gray")
+                    priority_color = display_meta.get("priority_color", "gray")
+
+                    status_plain = f"{icon} {status}"
+                    status_colored = _colorize(status_plain, status_color)
+                    priority_plain = f"({priority})"
+                    priority_colored = _colorize(priority_plain, priority_color)
+
+                    plain_line = (
+                        f"{idx}. {status_plain} {priority_plain} {content}{suffix}"
+                    )
+                    colored_line = (
+                        f"{idx}. {status_colored} {priority_colored} {content}{suffix}"
+                    )
+                    plain_lines.append(plain_line)
+                    colored_lines.append(colored_line)
+
+                max_len = max(len(line) for line in plain_lines) if plain_lines else 0
+                bar = "-" * max_len
+                output = "\n".join([bar] + colored_lines + [bar])
+            else:
+                output = data.get("prompt") or "(no todos)"
+
+            print(output, file=sys.stdout, flush=True)
+
+        self.context.set_metadata_callback(_combined_callback)
+
+    async def _call_llm(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        loop = asyncio.get_running_loop()
+        timeout = getattr(self.llm, "timeout", None)
+        max_retries = getattr(self.llm, "max_retries", 1) or 1
+
+        def _should_retry(error: Exception) -> bool:
+            error_str = str(error).lower()
+            return (
+                "429" in error_str
+                or "rate limit" in error_str
+                or "too many requests" in error_str
+                or "timeout" in error_str
+                or "timed out" in error_str
+                or isinstance(error, TimeoutError)
+            )
+
+        last_error: Optional[Exception] = None
+
+        for attempt in range(max_retries):
+            try:
+                if timeout is None:
+                    return await loop.run_in_executor(
+                        None, self.llm.chat, prompt, system_prompt
+                    )
+
+                return await asyncio.wait_for(
+                    loop.run_in_executor(None, self.llm.chat, prompt, system_prompt),
+                    timeout=timeout,
+                )
+            except Exception as e:
+                last_error = e
+                if attempt >= max_retries - 1 or not _should_retry(e):
+                    break
+
+                wait_time = 2**attempt
+                try:
+                    from agent.async_logger import get_logger, LogLevel
+
+                    logger = get_logger()
+                    await logger.log(
+                        LogLevel.WARNING,
+                        self.name,
+                        f"⚠️  LLM retry in {wait_time}s (attempt {attempt + 2}/{max_retries})",
+                        "LLM",
+                    )
+                except Exception:
+                    pass
+
+                await asyncio.sleep(wait_time)
+
+        if isinstance(last_error, asyncio.TimeoutError):
+            raise RuntimeError(f"LLM call timed out after {timeout}s") from last_error
+        if last_error is not None:
+            error_str = str(last_error).lower()
+            if (
+                "timeout" in error_str
+                or "timed out" in error_str
+                or isinstance(last_error, TimeoutError)
+            ):
+                raise RuntimeError(
+                    f"LLM call timed out after {timeout}s"
+                ) from last_error
+            raise RuntimeError(f"LLM call failed: {last_error}") from last_error
+        raise RuntimeError("LLM call failed")
 
     def _debug_llm_call(
         self,
@@ -304,7 +443,43 @@ class Agent:
         processing_task = asyncio.create_task(orchestrator.start_message_processing())
 
         # Run the agent (may suspend/resume multiple times)
-        asyncio.create_task(self._internal_run(task, agent_id))
+        internal_task = asyncio.create_task(self._internal_run(task, agent_id))
+
+        def _on_internal_done(done_task: asyncio.Task) -> None:
+            if done_task.cancelled():
+                return
+
+            exc = done_task.exception()
+            if exc is None:
+                return
+
+            async def _mark_failed() -> None:
+                from agent.orchestrator import AgentOrchestrator
+
+                orchestrator = AgentOrchestrator()
+                completion_event = orchestrator.completion_events.get(agent_id)
+                if completion_event and completion_event.is_set():
+                    return
+
+                error_msg = f"Agent failed: {exc}"
+                response = AgentResponse(
+                    content=error_msg,
+                    iterations=0,
+                    success=False,
+                )
+                await orchestrator.mark_agent_completed(agent_id, response)
+
+                try:
+                    from agent.async_logger import get_logger
+
+                    logger = get_logger()
+                    await logger.agent_finish(agent_id, False, response.content)
+                except Exception:
+                    pass
+
+            asyncio.create_task(_mark_failed())
+
+        internal_task.add_done_callback(_on_internal_done)
 
         # Wait for true completion (not just suspension)
         result = await orchestrator.wait_for_completion(agent_id)
@@ -369,14 +544,11 @@ class Agent:
         # Send initial task with system prompt (sync call wrapped in executor)
         # Wrap in try-except to handle LLM errors (e.g., 429 rate limit)
         try:
-            loop = asyncio.get_event_loop()
             self._debug_llm_call(
                 agent_id, "<system prompt hidden>" + task, "initial_task"
             )
             await self._log_llm_request(agent_id, task, "initial_task")
-            llm_output = await loop.run_in_executor(
-                None, self.llm.chat, task, self.system_prompt
-            )
+            llm_output = await self._call_llm(task, self.system_prompt)
         except Exception as e:
             # Log the error
             try:
@@ -402,9 +574,22 @@ class Agent:
             # Notify callbacks: agent finish
             for callback in self.callbacks:
                 callback.on_agent_finish(False, iteration, error_msg)
+            # Mark as completed so waiters can finish
+            from agent.orchestrator import AgentOrchestrator
 
-            # Re-raise so orchestrator can catch and send subagent_failed message
-            raise Exception(error_msg) from e
+            orchestrator = AgentOrchestrator()
+            await orchestrator.mark_agent_completed(agent_id, response)
+
+            # Log agent finish
+            try:
+                from agent.async_logger import get_logger
+
+                logger = get_logger()
+                await logger.agent_finish(agent_id, False, response.content)
+            except Exception:
+                pass
+
+            return response
 
         # Notify callbacks: LLM response
         for callback in self.callbacks:
@@ -559,9 +744,7 @@ class Agent:
 
                 self._debug_llm_call(agent_id, tool_result_msg, "tool_result")
                 await self._log_llm_request(agent_id, tool_result_msg, "tool_result")
-                llm_output = await loop.run_in_executor(
-                    None, lambda: self.llm.chat(tool_result_msg)
-                )
+                llm_output = await self._call_llm(tool_result_msg)
 
                 # Notify callbacks: LLM response
                 for callback in self.callbacks:
@@ -606,7 +789,7 @@ class Agent:
 
                 self._debug_llm_call(agent_id, result, "launch_subagents")
                 await self._log_llm_request(agent_id, result, "launch_subagents")
-                llm_output = await loop.run_in_executor(None, self.llm.chat, result)
+                llm_output = await self._call_llm(result)
 
                 # Notify callbacks: LLM response
                 for callback in self.callbacks:
@@ -647,9 +830,7 @@ class Agent:
 
                 self._debug_llm_call(agent_id, observation, "peer_message")
                 await self._log_llm_request(agent_id, observation, "peer_message")
-                llm_output = await loop.run_in_executor(
-                    None, self.llm.chat, f"Observation: {observation}"
-                )
+                llm_output = await self._call_llm(f"Observation: {observation}")
 
                 # Notify callbacks: LLM response
                 for callback in self.callbacks:
@@ -733,7 +914,7 @@ class Agent:
 
         self._debug_llm_call(agent_id, summary_prompt, "summary")
         await self._log_llm_request(agent_id, summary_prompt, "summary")
-        llm_output = await loop.run_in_executor(None, self.llm.chat, summary_prompt)
+        llm_output = await self._call_llm(summary_prompt)
 
         # Notify callbacks: LLM response
         for callback in self.callbacks:
@@ -846,7 +1027,7 @@ class Agent:
         loop = asyncio.get_event_loop()
         self._debug_llm_call(agent_id, resume_prompt, "resume")
         await self._log_llm_request(agent_id, resume_prompt, "resume")
-        llm_output = await loop.run_in_executor(None, self.llm.chat, resume_prompt)
+        llm_output = await self._call_llm(resume_prompt)
 
         # Notify callbacks: LLM response
         for callback in self.callbacks:
@@ -947,9 +1128,7 @@ class Agent:
 
                 self._debug_llm_call(agent_id, tool_result_msg, "tool_result")
 
-                llm_output = await loop.run_in_executor(
-                    None, lambda: self.llm.chat(tool_result_msg)
-                )
+                llm_output = await self._call_llm(tool_result_msg)
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
 
@@ -961,7 +1140,7 @@ class Agent:
                     callback.on_llm_request(iteration, result, None)
 
                 self._debug_llm_call(agent_id, result, "launch_subagents")
-                llm_output = await loop.run_in_executor(None, self.llm.chat, result)
+                llm_output = await self._call_llm(result)
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
 
@@ -973,9 +1152,7 @@ class Agent:
                     )
 
                 self._debug_llm_call(agent_id, observation, "peer_message")
-                llm_output = await loop.run_in_executor(
-                    None, self.llm.chat, f"Observation: {observation}"
-                )
+                llm_output = await self._call_llm(f"Observation: {observation}")
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
 
@@ -1032,7 +1209,7 @@ class Agent:
             callback.on_llm_request(iteration, summary_prompt, None)
 
         self._debug_llm_call(agent_id, summary_prompt, "summary")
-        llm_output = await loop.run_in_executor(None, self.llm.chat, summary_prompt)
+        llm_output = await self._call_llm(summary_prompt)
         for callback in self.callbacks:
             callback.on_llm_response(iteration, llm_output)
 
@@ -1096,9 +1273,7 @@ class Agent:
                     self._debug_llm_call(agent_id, error_msg, "parse_retry")
                     if agent_id:
                         await self._log_llm_request(agent_id, error_msg, "parse_retry")
-                    llm_output = await loop.run_in_executor(
-                        None, self.llm.chat, error_msg
-                    )
+                        llm_output = await self._call_llm(error_msg)
 
                     # Notify callbacks: LLM response
                     for callback in self.callbacks:

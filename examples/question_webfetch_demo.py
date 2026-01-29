@@ -25,7 +25,7 @@ async def main():
 
     task = (
         "Ask me which format to fetch (markdown/text/html), "
-        "then fetch https://example.com with webfetch and show a short summary."
+        "then fetch https://kaiming.me with webfetch and show a short summary."
     )
 
     result = await agent._run_async(task)
