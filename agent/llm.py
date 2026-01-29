@@ -14,9 +14,10 @@ import json
 import urllib.request
 import subprocess
 from abc import ABC, abstractmethod
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, cast
 from openai import OpenAI
 import requests
+import concurrent.futures
 from pathlib import Path
 import json
 
@@ -139,9 +140,10 @@ class OpenAILLM(LLM):
         self.history.append({"role": "user", "content": prompt})
 
         # Call OpenAI API
-        response = self.client.chat.completions.create(
+        messages: Any = self.history
+        response = self.client.chat.completions.create(  # type: ignore[call-arg]
             model=self.model,
-            messages=self.history,
+            messages=cast(Any, messages),
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             **self.config,
@@ -168,6 +170,7 @@ class DeepSeekLLM(LLM):
         api_key: str,
         model: str = "deepseek-chat",
         base_url: str = "https://api.deepseek.com",
+        timeout: int = 60,
         **kwargs,
     ):
         """
@@ -183,7 +186,8 @@ class DeepSeekLLM(LLM):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.timeout = timeout
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
         # Only store valid API parameters (not initialization parameters)
         self.config = kwargs
         self._log_balance()
@@ -228,14 +232,18 @@ class DeepSeekLLM(LLM):
                 import asyncio
 
                 logger = get_logger()
-                asyncio.create_task(
-                    logger.log(
-                        LogLevel.INFO,
-                        "DeepSeekLLM",
-                        f"💰 DeepSeek balance: {summary}",
-                        "LLM",
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(
+                        logger.log(
+                            LogLevel.INFO,
+                            "DeepSeekLLM",
+                            f"💰 DeepSeek balance: {summary}",
+                            "LLM",
+                        )
                     )
-                )
+                except RuntimeError:
+                    print(f"💰 DeepSeek balance: {summary}")
             except Exception:
                 print(f"💰 DeepSeek balance: {summary}")
         except Exception:
@@ -269,12 +277,29 @@ class DeepSeekLLM(LLM):
         last_error = None
         for attempt in range(max_retries):
             try:
-                response = self.client.chat.completions.create(
-                    model=self.model, messages=self.history, stream=False, **self.config
-                )
+                messages: Any = self.history
+
+                def _call_api():
+                    return self.client.chat.completions.create(  # type: ignore[call-arg]
+                        model=self.model,
+                        messages=cast(Any, messages),
+                        stream=False,
+                        timeout=self.timeout,
+                        **self.config,
+                    )
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(_call_api)
+                    try:
+                        response = future.result(timeout=self.timeout)
+                    except concurrent.futures.TimeoutError as e:
+                        future.cancel()
+                        raise TimeoutError(
+                            f"DeepSeek API request timed out after {self.timeout}s"
+                        ) from e
 
                 # Extract response text
-                assistant_message = response.choices[0].message.content
+                assistant_message: str = response.choices[0].message.content or ""
 
                 # Add assistant response to history
                 self.history.append({"role": "assistant", "content": assistant_message})
@@ -284,29 +309,39 @@ class DeepSeekLLM(LLM):
             except Exception as e:
                 last_error = e
 
-                # Check if this is a rate limit error
                 error_str = str(e).lower()
-                if (
+                is_rate_limit = (
                     "429" in error_str
                     or "rate limit" in error_str
                     or "too many requests" in error_str
-                ):
-                    # Rate limit error - retry with exponential backoff
+                )
+                is_timeout = (
+                    "timeout" in error_str
+                    or "timed out" in error_str
+                    or isinstance(e, TimeoutError)
+                )
+
+                if is_timeout or is_rate_limit:
                     if attempt < max_retries - 1:
                         wait_time = 2**attempt  # 1s, 2s, 4s, 8s, 16s
+                        error_type = "Timeout" if is_timeout else "Rate limit"
                         print(
-                            f"⚠️  Rate limit hit. Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})"
+                            f"⚠️  DeepSeek {error_type}. Retrying in {wait_time}s... "
+                            f"(attempt {attempt + 2}/{max_retries}, timeout={self.timeout}s)"
                         )
                         time.sleep(wait_time)
                         continue
                     else:
-                        # Last attempt failed
+                        if is_timeout:
+                            raise RuntimeError(
+                                f"DeepSeek API request timed out after {max_retries} retries. "
+                                f"Timeout: {self.timeout}s"
+                            )
                         raise RuntimeError(
                             f"DeepSeek API rate limit exceeded after {max_retries} retries: {e}"
                         )
-                else:
-                    # Non-rate-limit error - fail immediately
-                    raise RuntimeError(f"DeepSeek API request failed: {e}")
+
+                raise RuntimeError(f"DeepSeek API request failed: {e}")
 
         # Should not reach here, but just in case
         raise RuntimeError(
@@ -467,8 +502,9 @@ class CopilotLLM(LLM):
 
                 # Check if this is a rate limit error (429)
                 is_rate_limit = False
-                if hasattr(e, "response") and e.response is not None:
-                    status_code = e.response.status_code
+                response_obj = getattr(e, "response", None)
+                if response_obj is not None:
+                    status_code = response_obj.status_code
                     is_rate_limit = status_code == 429
 
                 # Retry on timeout or rate limit
@@ -490,18 +526,26 @@ class CopilotLLM(LLM):
                                 f"Consider increasing timeout for long-running tasks."
                             )
                         else:
+                            response_text = "N/A"
+                            if response_obj is not None and hasattr(
+                                response_obj, "text"
+                            ):
+                                response_text = response_obj.text
                             raise RuntimeError(
                                 f"GitHub Copilot API rate limit exceeded after {max_retries} retries.\n"
                                 f"Status: 429\n"
-                                f"Response: {e.response.text if hasattr(e.response, 'text') else 'N/A'}"
+                                f"Response: {response_text}"
                             )
 
                 # Non-retryable error - fail immediately
-                if hasattr(e, "response") and e.response is not None:
+                if response_obj is not None:
+                    response_text = (
+                        response_obj.text if hasattr(response_obj, "text") else "N/A"
+                    )
                     raise RuntimeError(
                         f"GitHub Copilot API request failed: {e}\n"
-                        f"Status: {e.response.status_code}\n"
-                        f"Response: {e.response.text if hasattr(e.response, 'text') else 'N/A'}"
+                        f"Status: {response_obj.status_code}\n"
+                        f"Response: {response_text}"
                     )
                 else:
                     # No response object - fail immediately

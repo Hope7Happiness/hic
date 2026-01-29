@@ -112,9 +112,7 @@ use it to continue your task. Do not ask the user about it or try to verify it a
     def _parse_tool_action(text: str, thought: Optional[str]) -> Action:
         """Parse a tool action."""
         tool_match = re.search(r"Tool:\s*(.+?)(?=\n|$)", text, re.IGNORECASE)
-        args_match = re.search(
-            r"Arguments:\s*(\{.+?\})", text, re.DOTALL | re.IGNORECASE
-        )
+        args_match = re.search(r"Arguments:\s*", text, re.IGNORECASE)
 
         if not tool_match:
             raise ParseError("Tool action requires 'Tool:' field")
@@ -123,8 +121,11 @@ use it to continue your task. Do not ask the user about it or try to verify it a
 
         # Parse arguments as JSON
         if args_match:
+            json_text = OutputParser._extract_json_object(text, args_match.end())
+            if json_text is None:
+                raise ParseError("Arguments must be a JSON object")
             try:
-                arguments = json.loads(args_match.group(1))
+                arguments = json.loads(json_text)
                 if not isinstance(arguments, dict):
                     raise ParseError("Arguments must be a JSON object")
             except json.JSONDecodeError as e:
@@ -200,6 +201,39 @@ use it to continue your task. Do not ask the user about it or try to verify it a
     def _parse_wait_action(text: str, thought: Optional[str]) -> Action:
         """Parse a wait action (replaces wait_for_subagents)."""
         return Action(type="wait", thought=thought)
+
+    @staticmethod
+    def _extract_json_object(text: str, start_idx: int) -> Optional[str]:
+        """Extract a JSON object starting at the first '{' after start_idx."""
+        brace_start = text.find("{", start_idx)
+        if brace_start == -1:
+            return None
+
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(brace_start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[brace_start : i + 1]
+
+        return None
 
     @staticmethod
     def _parse_send_message_action(text: str, thought: Optional[str]) -> Action:

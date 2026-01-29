@@ -49,9 +49,8 @@ async def main():
             "You are working in a small docs workspace. "
             "Use glob to list markdown files under docs/. "
             "Use grep to find TODO markers in docs (only .md files). "
-            "Then create a todo list with two items: review TODOs (high priority, pending) "
-            "and verify docs completeness (medium priority, pending). "
-            "Finally, read the todo list and summarize what you did."
+            "Then, create a todo list file using todowrite with the found TODOs. "
+            "Finally, read back the todo list using todoread and return its content."
         )
 
         result = await agent._run_async(task)

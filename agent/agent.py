@@ -199,6 +199,44 @@ class Agent:
             flush=True,
         )
 
+    async def _log_llm_request(self, agent_id: str, prompt: str, label: str):
+        if os.environ.get("LOG_LLM_STEPS", "1") == "0":
+            return
+        preview = prompt.replace("\n", " ").strip()
+        if len(preview) > 120:
+            preview = preview[:117] + "..."
+        try:
+            from agent.async_logger import get_logger, LogLevel
+
+            logger = get_logger()
+            await logger.log(
+                LogLevel.INFO,
+                agent_id,
+                f"📤 LLM request ({label}): {preview}",
+                "LLM",
+            )
+        except Exception:
+            print(f"[{self.name}] [LLM] 📤 request ({label}): {preview}")
+
+    async def _log_llm_response(self, agent_id: str, response: str, label: str):
+        if os.environ.get("LOG_LLM_STEPS", "1") == "0":
+            return
+        preview = response.replace("\n", " ").strip()
+        if len(preview) > 120:
+            preview = preview[:117] + "..."
+        try:
+            from agent.async_logger import get_logger, LogLevel
+
+            logger = get_logger()
+            await logger.log(
+                LogLevel.INFO,
+                agent_id,
+                f"📥 LLM response ({label}): {preview}",
+                "LLM",
+            )
+        except Exception:
+            print(f"[{self.name}] [LLM] 📥 response ({label}): {preview}")
+
     def _build_default_system_prompt(self) -> str:
         """Build a concise default system prompt."""
         prompt_parts = ["You are a helpful assistant. Think step by step."]
@@ -331,6 +369,7 @@ class Agent:
             self._debug_llm_call(
                 agent_id, "<system prompt hidden>" + task, "initial_task"
             )
+            await self._log_llm_request(agent_id, task, "initial_task")
             llm_output = await loop.run_in_executor(
                 None, self.llm.chat, task, self.system_prompt
             )
@@ -366,6 +405,7 @@ class Agent:
         # Notify callbacks: LLM response
         for callback in self.callbacks:
             callback.on_llm_response(iteration, llm_output)
+        await self._log_llm_response(agent_id, llm_output, "initial_task")
 
         # Check and perform compaction if needed (Checkpoint 1: After initial LLM response)
         try:
@@ -406,6 +446,23 @@ class Agent:
                 # Notify callbacks: agent finish
                 for callback in self.callbacks:
                     callback.on_agent_finish(False, iteration, response.content)
+                # Mark as completed in orchestrator
+                try:
+                    from agent.orchestrator import AgentOrchestrator
+
+                    orchestrator = AgentOrchestrator()
+                    await orchestrator.mark_agent_completed(agent_id, response)
+                except Exception:
+                    pass
+
+                # Log agent finish
+                try:
+                    from agent.async_logger import get_logger
+
+                    logger = get_logger()
+                    await logger.agent_finish(agent_id, False, response.content)
+                except Exception:
+                    pass
                 return response
 
             # Notify callbacks: parse success
@@ -497,6 +554,7 @@ class Agent:
                     callback.on_llm_request(iteration, tool_result_msg, None)
 
                 self._debug_llm_call(agent_id, tool_result_msg, "tool_result")
+                await self._log_llm_request(agent_id, tool_result_msg, "tool_result")
                 llm_output = await loop.run_in_executor(
                     None, lambda: self.llm.chat(tool_result_msg)
                 )
@@ -504,6 +562,7 @@ class Agent:
                 # Notify callbacks: LLM response
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
+                await self._log_llm_response(agent_id, llm_output, "tool_result")
 
                 # Check and perform compaction if needed (After tool execution)
                 try:
@@ -542,11 +601,13 @@ class Agent:
                     callback.on_llm_request(iteration, result, None)
 
                 self._debug_llm_call(agent_id, result, "launch_subagents")
+                await self._log_llm_request(agent_id, result, "launch_subagents")
                 llm_output = await loop.run_in_executor(None, self.llm.chat, result)
 
                 # Notify callbacks: LLM response
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
+                await self._log_llm_response(agent_id, llm_output, "launch_subagents")
 
                 # Check and perform compaction if needed (After launching subagents)
                 try:
@@ -581,6 +642,7 @@ class Agent:
                     )
 
                 self._debug_llm_call(agent_id, observation, "peer_message")
+                await self._log_llm_request(agent_id, observation, "peer_message")
                 llm_output = await loop.run_in_executor(
                     None, self.llm.chat, f"Observation: {observation}"
                 )
@@ -588,6 +650,7 @@ class Agent:
                 # Notify callbacks: LLM response
                 for callback in self.callbacks:
                     callback.on_llm_response(iteration, llm_output)
+                await self._log_llm_response(agent_id, llm_output, "peer_message")
 
                 # Check and perform compaction if needed (Checkpoint 2: After LLM call in main loop)
                 try:
@@ -665,11 +728,13 @@ class Agent:
             callback.on_llm_request(iteration, summary_prompt, None)
 
         self._debug_llm_call(agent_id, summary_prompt, "summary")
+        await self._log_llm_request(agent_id, summary_prompt, "summary")
         llm_output = await loop.run_in_executor(None, self.llm.chat, summary_prompt)
 
         # Notify callbacks: LLM response
         for callback in self.callbacks:
             callback.on_llm_response(iteration, llm_output)
+        await self._log_llm_response(agent_id, llm_output, "summary")
 
         response = AgentResponse(content=llm_output, iterations=iteration, success=True)
 
@@ -776,11 +841,13 @@ class Agent:
         # Get LLM response
         loop = asyncio.get_event_loop()
         self._debug_llm_call(agent_id, resume_prompt, "resume")
+        await self._log_llm_request(agent_id, resume_prompt, "resume")
         llm_output = await loop.run_in_executor(None, self.llm.chat, resume_prompt)
 
         # Notify callbacks: LLM response
         for callback in self.callbacks:
             callback.on_llm_response(iteration, llm_output)
+        await self._log_llm_response(agent_id, llm_output, "resume")
 
         # Check and perform compaction if needed (Checkpoint 3: After resume LLM call)
         try:
@@ -1000,6 +1067,20 @@ class Agent:
                 for callback in self.callbacks:
                     callback.on_parse_error(iteration, str(e), attempt + 1)
 
+                try:
+                    from agent.async_logger import get_logger, LogLevel
+
+                    logger = get_logger()
+                    if agent_id:
+                        await logger.log(
+                            LogLevel.WARNING,
+                            agent_id,
+                            f"⚠️ Parse error (attempt {attempt + 1}/{max_retries}): {str(e)[:200]}, Output Cotent: {llm_output}",
+                            "AGENT",
+                        )
+                except Exception:
+                    pass
+
                 if attempt < max_retries - 1:
                     # Retry with error feedback
                     error_msg = f"Parse error: {str(e)}\n\nPlease follow the exact format:\n{OutputParser.get_format_instruction()}"
@@ -1009,6 +1090,8 @@ class Agent:
                         callback.on_llm_request(iteration, error_msg, None)
 
                     self._debug_llm_call(agent_id, error_msg, "parse_retry")
+                    if agent_id:
+                        await self._log_llm_request(agent_id, error_msg, "parse_retry")
                     llm_output = await loop.run_in_executor(
                         None, self.llm.chat, error_msg
                     )
@@ -1016,6 +1099,10 @@ class Agent:
                     # Notify callbacks: LLM response
                     for callback in self.callbacks:
                         callback.on_llm_response(iteration, llm_output)
+                    if agent_id:
+                        await self._log_llm_response(
+                            agent_id, llm_output, "parse_retry"
+                        )
                 else:
                     # Final attempt failed
                     return None
