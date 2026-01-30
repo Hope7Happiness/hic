@@ -62,3 +62,5 @@ htmlcov/
 external/
 stories/
 output/
+
+_test*
